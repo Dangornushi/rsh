@@ -1,8 +1,12 @@
+use colored::Colorize;
+use colored::CustomColor;
 use nix::sys::wait::*;
 use nix::unistd::*;
+use std::env::current_dir;
 use std::ffi::CString;
 use std::io::Read;
 use std::io::Write;
+use whoami::username;
 
 #[derive(Debug)]
 pub struct RshError {
@@ -112,9 +116,44 @@ fn rsh_execute(args: Vec<String>) -> Result<Status, RshError> {
     Ok(Status::Success)
 }
 
+fn get_current_dir_as_vec() -> Vec<String> {
+    let current_dir = std::env::current_dir().unwrap();
+    let path = current_dir.as_path();
+    path.components()
+        .map(|component| component.as_os_str().to_string_lossy().to_string())
+        .collect()
+}
+
 fn rhs_loop() -> Result<Status, RshError> {
+    let cursor = ">";
+    let mut path_base_color = CustomColor::new(200, 0, 0);
+    let r = 135;
+    let g = 28;
+    let b = 267;
+
+    let mut inc_r = 0;
+    let mut inc_g = 0;
+    let mut inc_b = 0;
+
     loop {
-        print!(">>> ");
+        print!("{}: ", username().green().bold(),);
+
+        // 文字色処理アルゴリズム ---------------------------------
+        let dir_s = get_current_dir_as_vec();
+        //inc_r = r / dir_s.len();
+        inc_g = r / dir_s.len();
+        inc_b = b / dir_s.len();
+
+        for i in dir_s {
+            //path_base_color.r += inc_r as u8;
+            path_base_color.g += inc_g as u8;
+            path_base_color.b += inc_b as u8;
+            print!("{}/", i.custom_color(path_base_color));
+        }
+        path_base_color = CustomColor::new(0, 0, 0);
+        // --------------------------------------------------------
+        print!(" {} ", cursor);
+
         let line = rsh_read_line();
         let args = rsh_split_line(line);
 
@@ -129,10 +168,5 @@ fn rhs_loop() -> Result<Status, RshError> {
 }
 
 fn main() {
-    match rhs_loop() {
-        Ok(status) => {
-            println!("Status: {:?}", status);
-        }
-        Err(_) => {}
-    }
+    let _ = rhs_loop();
 }

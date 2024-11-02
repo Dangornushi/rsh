@@ -5,3 +5,5 @@ edition = "2021"
 
 [dependencies]
 nix="0.10.0"
+whoami="1.5.2"
+colored="2"
