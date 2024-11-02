@@ -59,6 +59,10 @@ fn rsh_cd() -> Result<Status, RshError> {
     Ok(Status::Success)
 }
 
+fn rsh_exit() -> Result<Status, RshError> {
+    Ok(Status::Exit)
+}
+
 fn rsh_launch(args: Vec<String>) -> Result<Status, RshError> {
     let pid = fork().map_err(|_| RshError::new("fork failed"))?;
 
@@ -67,8 +71,14 @@ fn rsh_launch(args: Vec<String>) -> Result<Status, RshError> {
             let wait_pid_result =
                 waitpid(child, None).map_err(|err| RshError::new(&format!("{}", err)));
             match wait_pid_result {
-                Ok(WaitStatus::Exited(_, _)) => Ok(Status::Success),
-                Ok(WaitStatus::Signaled(_, _, _)) => Ok(Status::Success),
+                Ok(WaitStatus::Exited(_, return_code)) => {
+                    println!("Exited: {}", return_code);
+                    Ok(Status::Success)
+                }
+                Ok(WaitStatus::Signaled(_, _, _)) => {
+                    println!("signaled");
+                    Ok(Status::Success)
+                }
                 Err(err) => Err(RshError::new(&err.message)),
                 _ => Ok(Status::Success),
             }
@@ -93,7 +103,9 @@ fn rsh_execute(args: Vec<String>) -> Result<Status, RshError> {
         return match arg.as_str() {
             // cd: ディレクトリ移動の組み込みコマンド
             "cd" => rsh_cd(),
-            // none: 何もなければ終了
+            // exit: 終了用の組み込みコマンド
+            "exit" => rsh_exit(),
+            // none: 何もなければコマンド実行
             _ => rsh_launch(args),
         };
     }
