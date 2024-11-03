@@ -2,7 +2,14 @@ use colored::Colorize;
 use colored::CustomColor;
 use nix::sys::wait::*;
 use nix::unistd::*;
-use std::env::current_dir;
+use nix::{
+    errno::Errno,
+    sys::{
+        signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal},
+        wait::waitpid,
+    },
+    unistd::{close, execvp, fork, getpgrp, pipe, read, setpgid, tcsetpgrp, ForkResult},
+};
 use std::ffi::CString;
 use std::io::Read;
 use std::io::Write;
@@ -30,7 +37,9 @@ pub enum Status {
 fn rsh_read_line() -> String {
     let mut buffer = String::new();
     let mut stdin = std::io::stdin();
+
     std::io::stdout().flush().unwrap();
+
     loop {
         let mut b = [0; 1];
         match stdin.read(&mut b) {
@@ -67,13 +76,41 @@ fn rsh_exit() -> Result<Status, RshError> {
     Ok(Status::Exit)
 }
 
+fn ignore_tty_signals() {
+    let sa = SigAction::new(SigHandler::SigIgn, SaFlags::empty(), SigSet::empty());
+    unsafe {
+        sigaction(Signal::SIGTSTP, &sa).unwrap();
+        sigaction(Signal::SIGTTIN, &sa).unwrap();
+        sigaction(Signal::SIGTTOU, &sa).unwrap();
+    }
+}
+
+fn restore_tty_signals() {
+    let sa = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
+    unsafe {
+        sigaction(Signal::SIGTSTP, &sa).unwrap();
+        sigaction(Signal::SIGTTIN, &sa).unwrap();
+        sigaction(Signal::SIGTTOU, &sa).unwrap();
+    }
+}
+
 fn rsh_launch(args: Vec<String>) -> Result<Status, RshError> {
     let pid = fork().map_err(|_| RshError::new("fork failed"))?;
 
+    let (pipe_read, pipe_write) = pipe().unwrap();
+
     match pid {
         ForkResult::Parent { child } => {
+            setpgid(child, child).unwrap();
+            tcsetpgrp(0, child).unwrap();
+            close(pipe_read).unwrap();
+            close(pipe_write).unwrap();
+
             let wait_pid_result =
                 waitpid(child, None).map_err(|err| RshError::new(&format!("{}", err)));
+
+            tcsetpgrp(0, getpgrp()).unwrap();
+
             match wait_pid_result {
                 Ok(WaitStatus::Exited(_, return_code)) => {
                     println!("Exited: {}", return_code);
@@ -88,13 +125,29 @@ fn rsh_launch(args: Vec<String>) -> Result<Status, RshError> {
             }
         }
         ForkResult::Child => {
+            restore_tty_signals();
+
+            close(pipe_write).unwrap();
+
+            loop {
+                let mut buf = [0];
+                match read(pipe_read, &mut buf) {
+                    Err(e) if e == nix::Error::Sys(Errno::EINTR) => (),
+                    _ => break,
+                }
+            }
+            close(pipe_read).unwrap();
+
+            // コマンドパース
             let path = CString::new(args[0].to_string()).unwrap();
             let args = if args.len() > 1 {
                 CString::new(args[1].to_string()).unwrap()
             } else {
                 CString::new("").unwrap()
             };
+            // -------------
 
+            // コマンド実行
             execvp(&path, &[path.clone(), args])
                 .map(|_| Status::Success)
                 .map_err(|_| RshError::new("Child Process failed"))
@@ -120,37 +173,25 @@ fn get_current_dir_as_vec() -> Vec<String> {
     let current_dir = std::env::current_dir().unwrap();
     let path = current_dir.as_path();
     path.components()
+        /*
+         */
         .map(|component| component.as_os_str().to_string_lossy().to_string())
         .collect()
 }
 
 fn rhs_loop() -> Result<Status, RshError> {
     let cursor = ">";
-    let mut path_base_color = CustomColor::new(200, 0, 0);
-    let r = 135;
-    let g = 28;
-    let b = 267;
 
-    let mut inc_r = 0;
-    let mut inc_g = 0;
-    let mut inc_b = 0;
+    ignore_tty_signals();
 
     loop {
-        print!("{}: ", username().green().bold(),);
+        print!("{}: ", username().green().bold());
 
         // 文字色処理アルゴリズム ---------------------------------
         let dir_s = get_current_dir_as_vec();
-        //inc_r = r / dir_s.len();
-        inc_g = r / dir_s.len();
-        inc_b = b / dir_s.len();
-
         for i in dir_s {
-            //path_base_color.r += inc_r as u8;
-            path_base_color.g += inc_g as u8;
-            path_base_color.b += inc_b as u8;
-            print!("{}/", i.custom_color(path_base_color));
+            print!("{}/", i.white().bold()); //.custom_color(path_base_color));
         }
-        path_base_color = CustomColor::new(0, 0, 0);
         // --------------------------------------------------------
         print!(" {} ", cursor);
 
