@@ -1,5 +1,4 @@
 use colored::Colorize;
-use colored::CustomColor;
 use nix::sys::wait::*;
 use nix::unistd::*;
 use nix::{
@@ -125,6 +124,7 @@ fn rsh_launch(args: Vec<String>) -> Result<Status, RshError> {
             }
         }
         ForkResult::Child => {
+            // シグナル系処理 ---------------------------
             restore_tty_signals();
 
             close(pipe_write).unwrap();
@@ -137,20 +137,33 @@ fn rsh_launch(args: Vec<String>) -> Result<Status, RshError> {
                 }
             }
             close(pipe_read).unwrap();
+            // ------------------------------------------
 
             // コマンドパース
             let path = CString::new(args[0].to_string()).unwrap();
-            let args = if args.len() > 1 {
-                CString::new(args[1].to_string()).unwrap()
-            } else {
-                CString::new("").unwrap()
-            };
-            // -------------
 
-            // コマンド実行
-            execvp(&path, &[path.clone(), args])
+            let c_args: Vec<CString> = args
+                .iter()
+                .map(|s| CString::new(s.as_bytes()).unwrap())
+                .collect();
+
+            execvp(&path, &c_args)
                 .map(|_| Status::Success)
                 .map_err(|_| RshError::new("Child Process failed"))
+
+            /*
+
+            if args.len() > 1 {
+                // &[path.clone] + args
+                // コマンド実行
+            } else {
+                // コマンド実行
+                execvp(&path, args)
+                    .map(|_| Status::Success)
+                    .map_err(|_| RshError::new("Child Process failed"))
+            }
+             */
+            // -------------
         }
     }
 }
