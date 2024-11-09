@@ -64,7 +64,57 @@ fn rsh_read_line() -> String {
 }
 
 fn rsh_split_line(line: String) -> Vec<String> {
-    line.split(" ").map(String::from).collect()
+    /*
+                } else if c == '"' {
+                    quote_flag = !quote_flag;
+                    buffer.push('"');
+                    buffer.push_str(&in_quote_buffer);
+                    buffer.push('"');
+                    in_quote_buffer.clear();
+                } else {
+                    match quote_flag {
+                        true => in_quote_buffer.push(b[0] as char),
+                        false => {
+                            buffer.push(b[0] as char);
+                        }
+                    }
+                }
+    */
+    let mut quote_flag = false;
+    let mut in_quote_buffer = String::new();
+    let mut buffer = String::new();
+    let mut r_vec = Vec::new();
+
+    for c in line.chars() {
+        if c == '"' {
+            match quote_flag {
+                true => {
+                    //閉じるクォート
+                    buffer.push_str(&in_quote_buffer);
+                    buffer.push('"');
+                    in_quote_buffer.clear();
+                }
+                false => {
+                    //始めるクォート
+                    buffer.push('"');
+                }
+            }
+            quote_flag = !quote_flag;
+        } else if c == ' ' && quote_flag != true {
+            r_vec.push(buffer.clone());
+            buffer.clear();
+        } else {
+            match quote_flag {
+                true => in_quote_buffer.push(c),
+                false => {
+                    buffer.push(c);
+                }
+            }
+        }
+    }
+    r_vec.push(buffer.clone());
+    buffer.clear();
+    r_vec
 }
 
 fn rsh_cd(dir: &str) -> Result<Status, RshError> {
@@ -78,6 +128,7 @@ fn rsh_cd(dir: &str) -> Result<Status, RshError> {
 }
 
 fn rsh_exit() -> Result<Status, RshError> {
+    println!("Bye");
     Ok(Status::Exit)
 }
 
