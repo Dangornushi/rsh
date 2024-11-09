@@ -12,6 +12,7 @@ use nix::{
 use std::ffi::CString;
 use std::io::Read;
 use std::io::Write;
+use std::path::Path;
 use whoami::username;
 
 #[derive(Debug)]
@@ -66,9 +67,14 @@ fn rsh_split_line(line: String) -> Vec<String> {
     line.split(" ").map(String::from).collect()
 }
 
-fn rsh_cd() -> Result<Status, RshError> {
-    println!("Rsh cd");
-    Ok(Status::Success)
+fn rsh_cd(dir: &str) -> Result<Status, RshError> {
+    if !dir.is_empty() {
+        chdir(Path::new(dir))
+            .map(|_| Status::Success)
+            .map_err(|err| RshError::new(&err.to_string()))
+    } else {
+        Err(RshError::new("rsh: expected arguments to cd\n"))
+    }
 }
 
 fn rsh_exit() -> Result<Status, RshError> {
@@ -160,7 +166,11 @@ fn rsh_execute(args: Vec<String>) -> Result<Status, RshError> {
     if let Option::Some(arg) = args.get(0) {
         return match arg.as_str() {
             // cd: ディレクトリ移動の組み込みコマンド
-            "cd" => rsh_cd(),
+            "cd" => rsh_cd(if let Option::Some(dir) = args.get(1) {
+                dir
+            } else {
+                ""
+            }),
             // exit: 終了用の組み込みコマンド
             "exit" => rsh_exit(),
             // none: 何もなければコマンド実行
