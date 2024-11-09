@@ -52,7 +52,7 @@ fn rsh_read_line() -> String {
                 }
             }
             Ok(_) => {
-                println!("予期しない入力");
+                println!("invalid input");
             }
             Err(e) => {
                 eprintln!("エラーが発生しました: {}", e);
@@ -169,7 +169,8 @@ fn rsh_launch(args: Vec<String>) -> Result<Status, RshError> {
 
             match wait_pid_result {
                 Ok(WaitStatus::Exited(_, return_code)) => {
-                    println!("Exited: {}", return_code);
+                    // ui
+                    //println!("Exited: {}", return_code);
                     Ok(Status::Success)
                 }
                 Ok(WaitStatus::Signaled(_, _, _)) => {
@@ -235,8 +236,6 @@ fn get_current_dir_as_vec() -> Vec<String> {
     let current_dir = std::env::current_dir().unwrap();
     let path = current_dir.as_path();
     path.components()
-        /*
-         */
         .map(|component| component.as_os_str().to_string_lossy().to_string())
         .collect()
 }
@@ -247,6 +246,7 @@ fn rhs_loop() -> Result<Status, RshError> {
     ignore_tty_signals();
 
     loop {
+        // ui ------------------------------------------------------------------
         print!("{}: ", username().green().bold());
 
         // 文字色処理アルゴリズム ---------------------------------
@@ -256,6 +256,7 @@ fn rhs_loop() -> Result<Status, RshError> {
         }
         // --------------------------------------------------------
         print!(" {} ", cursor);
+        // ---------------------------------------------------------------------
 
         let line = rsh_read_line();
         let args = rsh_split_line(line);
@@ -271,5 +272,6 @@ fn rhs_loop() -> Result<Status, RshError> {
 }
 
 fn main() {
-    let _ = rhs_loop();
+    let code = rhs_loop();
+    println!("> {:?}", code);
 }
