@@ -151,18 +151,6 @@ fn rsh_launch(args: Vec<String>) -> Result<Status, RshError> {
                 .map(|_| Status::Success)
                 .map_err(|_| RshError::new("Child Process failed"))
 
-            /*
-
-            if args.len() > 1 {
-                // &[path.clone] + args
-                // コマンド実行
-            } else {
-                // コマンド実行
-                execvp(&path, args)
-                    .map(|_| Status::Success)
-                    .map_err(|_| RshError::new("Child Process failed"))
-            }
-             */
             // -------------
         }
     }
