@@ -119,6 +119,7 @@ fn rsh_split_line(line: String) -> Vec<String> {
 
 fn rsh_cd(dir: &str) -> Result<Status, RshError> {
     if !dir.is_empty() {
+        // TODO: エラーハンドリング
         chdir(Path::new(dir))
             .map(|_| Status::Success)
             .map_err(|err| RshError::new(&err.to_string()))
@@ -130,6 +131,37 @@ fn rsh_cd(dir: &str) -> Result<Status, RshError> {
 fn rsh_exit() -> Result<Status, RshError> {
     println!("Bye");
     Ok(Status::Exit)
+}
+
+fn rsh_logo() -> Result<Status, RshError> {
+    println!("                                    ...................");
+    println!("                             ..,77!                     _7!.");
+    println!(" `       `  `  `         .,7!.!       ...1.   `              .7&,   `                   `    `  `");
+    println!(
+        "      `           `  .(7`    \\     ` .\\   ,,   `     `  `      ( .7..     `     `  `"
+    );
+    println!("  `       `  `    .?!       ,   `    J  .: ,,    `        `     )    7i,`    `       `  `  `   `");
+    println!("    `  `        ,^     `    ]        %, .; .,,     `        `   (       ?1,      `               `");
+    println!(" `         `  .^    `      .(  `  ` .:t .: \\ (  `    `  `        [        `?(       `   `   `");
+    println!("      `  `  ./     `    `  ,        , -, `.`  t            `     j   `       ?,   `        `  `");
+    println!("  `        .^   `     `    ,        ,   .J.   ,.  `   `      `   ,     `       4,     `         `");
+    println!(
+        "    `         .   `        ,  ` `   ,.7!] r.<?~[        `        ,        `     .i      `"
+    );
+    println!(" `    `  `  t 1    `   `   ,      ` ,   ?7    `]   `      `   `  ,`  `            4.      `  `");
+    println!("            (  5.   `    ` ,        ,. ] . 1   ]     `     `     ,     `   `       (.  `       `");
+    println!("   `   `    ,   ?,          ) `  `   %`] ]  3  \\  `    `         ,       `   `  `   1.     `     `");
+    println!(" `       `   l    5,  `     1        ,.t t  ,./          `   `  `J `  `            .=    `    `");
+    println!(
+        "    `          i.   ?i,  `  ,,        t  (   (  `   `           .\\        `   ` ..Z."
+    );
+    println!("      `   `     ,i     .7(,  1  `  `  ,+ . .?         `   `   ` ,    `       .JV");
+    println!("                   7+.     ?i,                                 .^      `..JV7^");
+    println!("   `                  7(,     ?=..                           :w^  ` ..wV7");
+    println!("     `   `   `  `        7..      _71....   `      `  .........(?7&?!                         `  `");
+    println!(" `        `       `         ?7(,           _????!!``       ...?7!               `  `   `  `");
+    println!("    `  `      `    `             ?7<<... ..       ....(?=`             `  `  `               `");
+    Ok(Status::Success)
 }
 
 fn ignore_tty_signals() {
@@ -223,6 +255,7 @@ fn rsh_execute(args: Vec<String>) -> Result<Status, RshError> {
             } else {
                 ""
             }),
+            "%logo" => rsh_logo(),
             // exit: 終了用の組み込みコマンド
             "exit" => rsh_exit(),
             // none: 何もなければコマンド実行
@@ -235,9 +268,18 @@ fn rsh_execute(args: Vec<String>) -> Result<Status, RshError> {
 fn get_current_dir_as_vec() -> Vec<String> {
     let current_dir = std::env::current_dir().unwrap();
     let path = current_dir.as_path();
-    path.components()
+    let mut now_dir: Vec<String> = path
+        .components()
         .map(|component| component.as_os_str().to_string_lossy().to_string())
-        .collect()
+        .collect();
+
+    if now_dir.len() > 2 {
+        now_dir.remove(0);
+        now_dir.remove(0);
+        now_dir.remove(0);
+    }
+
+    now_dir
 }
 
 fn rhs_loop() -> Result<Status, RshError> {
