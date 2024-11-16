@@ -1,6 +1,16 @@
+mod command;
+mod error;
+
 use colored::Colorize;
+use crossterm::{
+    cursor,
+    event::{Event, KeyCode},
+    execute,
+    style::{Color, Print, SetForegroundColor},
+    terminal,
+};
+use error::error::{RshError, Status};
 use nix::sys::wait::*;
-use nix::unistd::*;
 use nix::{
     errno::Errno,
     sys::{
@@ -10,29 +20,10 @@ use nix::{
     unistd::{close, execvp, fork, getpgrp, pipe, read, setpgid, tcsetpgrp, ForkResult},
 };
 use std::ffi::CString;
-use std::io::Read;
-use std::io::Write;
-use std::path::Path;
+use std::io::{stdin, stdout, Read, Write};
+use std::thread;
+use std::time::Duration;
 use whoami::username;
-
-#[derive(Debug)]
-pub struct RshError {
-    pub message: String,
-}
-
-impl RshError {
-    pub fn new(message: &str) -> RshError {
-        RshError {
-            message: message.to_string(),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum Status {
-    Success,
-    Exit,
-}
 
 fn rsh_read_line() -> String {
     let mut buffer = String::new();
@@ -64,22 +55,6 @@ fn rsh_read_line() -> String {
 }
 
 fn rsh_split_line(line: String) -> Vec<String> {
-    /*
-                } else if c == '"' {
-                    quote_flag = !quote_flag;
-                    buffer.push('"');
-                    buffer.push_str(&in_quote_buffer);
-                    buffer.push('"');
-                    in_quote_buffer.clear();
-                } else {
-                    match quote_flag {
-                        true => in_quote_buffer.push(b[0] as char),
-                        false => {
-                            buffer.push(b[0] as char);
-                        }
-                    }
-                }
-    */
     let mut quote_flag = false;
     let mut in_quote_buffer = String::new();
     let mut buffer = String::new();
@@ -115,53 +90,6 @@ fn rsh_split_line(line: String) -> Vec<String> {
     r_vec.push(buffer.clone());
     buffer.clear();
     r_vec
-}
-
-fn rsh_cd(dir: &str) -> Result<Status, RshError> {
-    if !dir.is_empty() {
-        // TODO: エラーハンドリング
-        chdir(Path::new(dir))
-            .map(|_| Status::Success)
-            .map_err(|err| RshError::new(&err.to_string()))
-    } else {
-        Err(RshError::new("rsh: expected arguments to cd\n"))
-    }
-}
-
-fn rsh_exit() -> Result<Status, RshError> {
-    println!("Bye");
-    Ok(Status::Exit)
-}
-
-fn rsh_logo() -> Result<Status, RshError> {
-    println!("                                    ...................");
-    println!("                             ..,77!                     _7!.");
-    println!(" `       `  `  `         .,7!.!       ...1.   `              .7&,   `                   `    `  `");
-    println!(
-        "      `           `  .(7`    \\     ` .\\   ,,   `     `  `      ( .7..     `     `  `"
-    );
-    println!("  `       `  `    .?!       ,   `    J  .: ,,    `        `     )    7i,`    `       `  `  `   `");
-    println!("    `  `        ,^     `    ]        %, .; .,,     `        `   (       ?1,      `               `");
-    println!(" `         `  .^    `      .(  `  ` .:t .: \\ (  `    `  `        [        `?(       `   `   `");
-    println!("      `  `  ./     `    `  ,        , -, `.`  t            `     j   `       ?,   `        `  `");
-    println!("  `        .^   `     `    ,        ,   .J.   ,.  `   `      `   ,     `       4,     `         `");
-    println!(
-        "    `         .   `        ,  ` `   ,.7!] r.<?~[        `        ,        `     .i      `"
-    );
-    println!(" `    `  `  t 1    `   `   ,      ` ,   ?7    `]   `      `   `  ,`  `            4.      `  `");
-    println!("            (  5.   `    ` ,        ,. ] . 1   ]     `     `     ,     `   `       (.  `       `");
-    println!("   `   `    ,   ?,          ) `  `   %`] ]  3  \\  `    `         ,       `   `  `   1.     `     `");
-    println!(" `       `   l    5,  `     1        ,.t t  ,./          `   `  `J `  `            .=    `    `");
-    println!(
-        "    `          i.   ?i,  `  ,,        t  (   (  `   `           .\\        `   ` ..Z."
-    );
-    println!("      `   `     ,i     .7(,  1  `  `  ,+ . .?         `   `   ` ,    `       .JV");
-    println!("                   7+.     ?i,                                 .^      `..JV7^");
-    println!("   `                  7(,     ?=..                           :w^  ` ..wV7");
-    println!("     `   `   `  `        7..      _71....   `      `  .........(?7&?!                         `  `");
-    println!(" `        `       `         ?7(,           _????!!``       ...?7!               `  `   `  `");
-    println!("    `  `      `    `             ?7<<... ..       ....(?=`             `  `  `               `");
-    Ok(Status::Success)
 }
 
 fn ignore_tty_signals() {
@@ -246,18 +174,57 @@ fn rsh_launch(args: Vec<String>) -> Result<Status, RshError> {
     }
 }
 
+fn rsh_cursor_test() -> Result<(), std::io::Error> {
+    let mut stdin = stdin();
+    let mut buffer = [0];
+    let mut rgb = 0;
+
+    terminal::enable_raw_mode()?;
+
+    // 文字の出力
+    execute!(stdout(), Print("Hello, world!"))?;
+
+    loop {
+        thread::sleep(Duration::from_millis(1));
+        // カーソルを先頭に移動し、文字を消去
+        execute!(stdout(), cursor::MoveToColumn(1), cursor::MoveToNextLine(1))?;
+
+        // 色を変えて再度出力
+        execute!(
+            stdout(),
+            SetForegroundColor(Color::Rgb { r: rgb, g: 0, b: 0 }),
+            Print("Hello, world!")
+        )?;
+
+        if rgb > 254 {
+            rgb = 0;
+        } else {
+            rgb += 1;
+        }
+    }
+    // 元の状態に戻す
+    terminal::disable_raw_mode()?;
+
+    Ok(())
+}
+
 fn rsh_execute(args: Vec<String>) -> Result<Status, RshError> {
     if let Option::Some(arg) = args.get(0) {
         return match arg.as_str() {
             // cd: ディレクトリ移動の組み込みコマンド
-            "cd" => rsh_cd(if let Option::Some(dir) = args.get(1) {
+            "cd" => command::cd::rsh_cd(if let Option::Some(dir) = args.get(1) {
                 dir
             } else {
                 ""
             }),
-            "%logo" => rsh_logo(),
+            // ロゴ表示
+            "%logo" => command::logo::rsh_logo(),
+            "%" => {
+                let _ = rsh_cursor_test();
+                Ok(Status::Success)
+            }
             // exit: 終了用の組み込みコマンド
-            "exit" => rsh_exit(),
+            "exit" => command::exit::rsh_exit(),
             // none: 何もなければコマンド実行
             _ => rsh_launch(args),
         };
