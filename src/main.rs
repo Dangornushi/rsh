@@ -2,12 +2,17 @@ mod command;
 mod error;
 
 use colored::Colorize;
+use crossterm::event::read;
+use crossterm::event::KeyEvent;
 use crossterm::{
     cursor,
+    cursor::MoveToColumn,
+    cursor::MoveToRow,
     event::{Event, KeyCode},
     execute,
     style::{Color, Print, SetForegroundColor},
     terminal,
+    terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType},
 };
 use error::error::{RshError, Status};
 use nix::sys::wait::*;
@@ -17,9 +22,10 @@ use nix::{
         signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal},
         wait::waitpid,
     },
-    unistd::{close, execvp, fork, getpgrp, pipe, read, setpgid, tcsetpgrp, ForkResult},
+    unistd::{close, execvp, fork, getpgrp, pipe, setpgid, tcsetpgrp, ForkResult},
 };
 use std::ffi::CString;
+use std::fmt::format;
 use std::io::{stdin, stdout, Read, Write};
 use std::thread;
 use std::time::Duration;
@@ -27,31 +33,37 @@ use whoami::username;
 
 fn rsh_read_line() -> String {
     let mut buffer = String::new();
-    let mut stdin = std::io::stdin();
-
-    std::io::stdout().flush().unwrap();
-
+    let mut stdout = stdout();
+    enable_raw_mode().unwrap();
     loop {
-        let mut b = [0; 1];
-        match stdin.read(&mut b) {
-            Ok(n) if n == 1 => {
-                let c = b[0] as char;
-                if c == '\n' {
+        if let Event::Key(KeyEvent {
+            code,
+            modifiers: _,
+            kind: _,
+            state: _,
+        }) = read().unwrap()
+        {
+            match code {
+                KeyCode::Enter => {
                     break;
-                } else {
-                    buffer.push(b[0] as char);
                 }
-            }
-            Ok(_) => {
-                println!("invalid input");
-            }
-            Err(e) => {
-                eprintln!("エラーが発生しました: {}", e);
-                break;
+                KeyCode::Backspace => {
+                    buffer.pop();
+                }
+                _ => buffer = format!("{}{}", buffer, code),
             }
         }
+        execute!(
+            stdout,
+            MoveToColumn(buffer.len() as u16),
+            Clear(ClearType::FromCursorUp),
+        )
+        .unwrap();
+        print!("{}", buffer);
+        std::io::stdout().flush().unwrap();
     }
-    buffer.trim().to_string()
+    disable_raw_mode().unwrap();
+    return buffer;
 }
 
 fn rsh_split_line(line: String) -> Vec<String> {
@@ -149,7 +161,7 @@ fn rsh_launch(args: Vec<String>) -> Result<Status, RshError> {
 
             loop {
                 let mut buf = [0];
-                match read(pipe_read, &mut buf) {
+                match nix::unistd::read(pipe_read, &mut buf) {
                     Err(e) if e == nix::Error::Sys(Errno::EINTR) => (),
                     _ => break,
                 }
@@ -267,6 +279,7 @@ fn rhs_loop() -> Result<Status, RshError> {
         print!(" {} ", cursor);
         // ---------------------------------------------------------------------
 
+        std::io::stdout().flush().unwrap();
         let line = rsh_read_line();
         let args = rsh_split_line(line);
 
