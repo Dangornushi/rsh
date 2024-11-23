@@ -2,12 +2,14 @@ mod command;
 mod error;
 
 use colored::Colorize;
+use crossterm::cursor::MoveRight;
+use crossterm::cursor::MoveTo;
 use crossterm::event::read;
 use crossterm::event::KeyEvent;
 use crossterm::{
     cursor,
+    cursor::MoveLeft,
     cursor::MoveToColumn,
-    cursor::MoveToRow,
     event::{Event, KeyCode},
     execute,
     style::{Color, Print, SetForegroundColor},
@@ -24,276 +26,376 @@ use nix::{
     },
     unistd::{close, execvp, fork, getpgrp, pipe, setpgid, tcsetpgrp, ForkResult},
 };
+use std::env;
 use std::ffi::CString;
-use std::fmt::format;
+use std::fs;
 use std::io::{stdin, stdout, Read, Write};
 use std::thread;
 use std::time::Duration;
 use whoami::username;
 
-fn rsh_read_line() -> String {
-    let mut buffer = String::new();
-    let mut stdout = stdout();
-    enable_raw_mode().unwrap();
-    loop {
-        if let Event::Key(KeyEvent {
-            code,
-            modifiers: _,
-            kind: _,
-            state: _,
-        }) = read().unwrap()
-        {
-            match code {
-                KeyCode::Enter => {
-                    break;
-                }
-                KeyCode::Backspace => {
-                    buffer.pop();
-                }
-                _ => buffer = format!("{}{}", buffer, code),
-            }
-        }
-        execute!(
-            stdout,
-            MoveToColumn(buffer.len() as u16),
-            Clear(ClearType::FromCursorUp),
-        )
-        .unwrap();
-        print!("{}", buffer);
-        std::io::stdout().flush().unwrap();
-    }
-    disable_raw_mode().unwrap();
-    return buffer;
+struct Autcomplete {
+    buffer: String,
+    exit: bool,
+}
+struct rsh {
+    prompt: String,
+    command_database: Vec<String>,
 }
 
-fn rsh_split_line(line: String) -> Vec<String> {
-    let mut quote_flag = false;
-    let mut in_quote_buffer = String::new();
-    let mut buffer = String::new();
-    let mut r_vec = Vec::new();
-
-    for c in line.chars() {
-        if c == '"' {
-            match quote_flag {
-                true => {
-                    //閉じるクォート
-                    buffer.push_str(&in_quote_buffer);
-                    buffer.push('"');
-                    in_quote_buffer.clear();
-                }
-                false => {
-                    //始めるクォート
-                    buffer.push('"');
-                }
-            }
-            quote_flag = !quote_flag;
-        } else if c == ' ' && quote_flag != true {
-            r_vec.push(buffer.clone());
-            buffer.clear();
-        } else {
-            match quote_flag {
-                true => in_quote_buffer.push(c),
-                false => {
-                    buffer.push(c);
+impl rsh {
+    fn get_executable_commands(&mut self) {
+        if let Some(paths) = env::var_os("PATH") {
+            for path in env::split_paths(&paths) {
+                if let Ok(entries) = fs::read_dir(path) {
+                    for entry in entries {
+                        if let Ok(entry) = entry {
+                            let path = entry.path();
+                            if path.is_file() {
+                                if let Some(file_name) = path.file_name() {
+                                    if let Some(file_name_str) = file_name.to_str() {
+                                        self.command_database.push(file_name_str.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
     }
-    r_vec.push(buffer.clone());
-    buffer.clear();
-    r_vec
-}
 
-fn ignore_tty_signals() {
-    let sa = SigAction::new(SigHandler::SigIgn, SaFlags::empty(), SigSet::empty());
-    unsafe {
-        sigaction(Signal::SIGTSTP, &sa).unwrap();
-        sigaction(Signal::SIGTTIN, &sa).unwrap();
-        sigaction(Signal::SIGTTOU, &sa).unwrap();
-    }
-}
+    fn rsh_char_search(&self, search_string: String) -> Result<String, RshError> {
+        let mut autocomplete = Autcomplete {
+            buffer: String::new(),
+            exit: false,
+        };
 
-fn restore_tty_signals() {
-    let sa = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
-    unsafe {
-        sigaction(Signal::SIGTSTP, &sa).unwrap();
-        sigaction(Signal::SIGTTIN, &sa).unwrap();
-        sigaction(Signal::SIGTTOU, &sa).unwrap();
-    }
-}
-
-fn rsh_launch(args: Vec<String>) -> Result<Status, RshError> {
-    let pid = fork().map_err(|_| RshError::new("fork failed"))?;
-
-    let (pipe_read, pipe_write) = pipe().unwrap();
-
-    match pid {
-        ForkResult::Parent { child } => {
-            setpgid(child, child).unwrap();
-            tcsetpgrp(0, child).unwrap();
-            close(pipe_read).unwrap();
-            close(pipe_write).unwrap();
-
-            let wait_pid_result =
-                waitpid(child, None).map_err(|err| RshError::new(&format!("{}", err)));
-
-            tcsetpgrp(0, getpgrp()).unwrap();
-
-            match wait_pid_result {
-                Ok(WaitStatus::Exited(_, return_code)) => {
-                    // ui
-                    //println!("Exited: {}", return_code);
-                    Ok(Status::Success)
-                }
-                Ok(WaitStatus::Signaled(_, _, _)) => {
-                    println!("signaled");
-                    Ok(Status::Success)
-                }
-                Err(err) => Err(RshError::new(&err.message)),
-                _ => Ok(Status::Success),
+        for command in &self.command_database {
+            if command.starts_with(&search_string) {
+                return Ok(command.clone());
             }
         }
-        ForkResult::Child => {
-            // シグナル系処理 ---------------------------
-            restore_tty_signals();
+        Err(RshError::new(&format!("{} not found", search_string)))
+    }
 
-            close(pipe_write).unwrap();
+    fn rsh_read_line(&mut self) -> String {
+        let mut buffer = String::new();
+        let mut stdout = stdout();
+        let mut pushed_tab = false;
+        let mut stack_buffer = String::new();
+        enable_raw_mode().unwrap();
 
-            loop {
-                let mut buf = [0];
-                match nix::unistd::read(pipe_read, &mut buf) {
-                    Err(e) if e == nix::Error::Sys(Errno::EINTR) => (),
-                    _ => break,
+        loop {
+            if let Event::Key(KeyEvent {
+                code,
+                modifiers: _,
+                kind: _,
+                state: _,
+            }) = read().unwrap()
+            {
+                match code {
+                    KeyCode::Tab => {
+                        // 文字の出力
+                        if !pushed_tab {
+                            stack_buffer = buffer.clone();
+                        }
+
+                        self.get_executable_commands();
+                        if let Ok(autocomplete) = self.rsh_char_search(stack_buffer.clone()) {
+                            buffer = autocomplete;
+                        }
+
+                        pushed_tab = true;
+                    }
+                    KeyCode::Enter => {
+                        break;
+                    }
+                    _ => {
+                        if pushed_tab {
+                            buffer = stack_buffer.clone();
+                            pushed_tab = false;
+                        }
+                        buffer = match code {
+                            KeyCode::Backspace => {
+                                buffer.pop();
+                                buffer.clone()
+                            }
+                            KeyCode::Char(c) => format!("{}{}", buffer, c),
+                            _ => buffer,
+                        };
+                    }
                 }
             }
-            close(pipe_read).unwrap();
-            // ------------------------------------------
 
-            // コマンドパース
-            let path = CString::new(args[0].to_string()).unwrap();
-
-            let c_args: Vec<CString> = args
-                .iter()
-                .map(|s| CString::new(s.as_bytes()).unwrap())
-                .collect();
-
-            execvp(&path, &c_args)
-                .map(|_| Status::Success)
-                .map_err(|_| RshError::new("Child Process failed"))
-
-            // -------------
+            // 絶対値なので相対移動になるようになんとかする
+            execute!(
+                stdout,
+                MoveToColumn(0),
+                Clear(ClearType::UntilNewLine),
+                Print(self.prompt.clone()),
+                Print(buffer.clone()),
+            )
+            .unwrap();
+            std::io::stdout().flush().unwrap();
         }
+        disable_raw_mode().unwrap();
+        return buffer;
     }
-}
 
-fn rsh_cursor_test() -> Result<(), std::io::Error> {
-    let mut stdin = stdin();
-    let mut buffer = [0];
-    let mut rgb = 0;
+    fn rsh_split_line(&self, line: String) -> Vec<String> {
+        let mut quote_flag = false;
+        let mut in_quote_buffer = String::new();
+        let mut buffer = String::new();
+        let mut r_vec = Vec::new();
 
-    terminal::enable_raw_mode()?;
-
-    // 文字の出力
-    execute!(stdout(), Print("Hello, world!"))?;
-
-    loop {
-        thread::sleep(Duration::from_millis(1));
-        // カーソルを先頭に移動し、文字を消去
-        execute!(stdout(), cursor::MoveToColumn(1), cursor::MoveToNextLine(1))?;
-
-        // 色を変えて再度出力
-        execute!(
-            stdout(),
-            SetForegroundColor(Color::Rgb { r: rgb, g: 0, b: 0 }),
-            Print("Hello, world!")
-        )?;
-
-        if rgb > 254 {
-            rgb = 0;
-        } else {
-            rgb += 1;
-        }
-    }
-    // 元の状態に戻す
-    terminal::disable_raw_mode()?;
-
-    Ok(())
-}
-
-fn rsh_execute(args: Vec<String>) -> Result<Status, RshError> {
-    if let Option::Some(arg) = args.get(0) {
-        return match arg.as_str() {
-            // cd: ディレクトリ移動の組み込みコマンド
-            "cd" => command::cd::rsh_cd(if let Option::Some(dir) = args.get(1) {
-                dir
+        for c in line.chars() {
+            if c == '"' {
+                match quote_flag {
+                    true => {
+                        //閉じるクォート
+                        buffer.push_str(&in_quote_buffer);
+                        buffer.push('"');
+                        in_quote_buffer.clear();
+                    }
+                    false => {
+                        //始めるクォート
+                        buffer.push('"');
+                    }
+                }
+                quote_flag = !quote_flag;
+            } else if c == ' ' && quote_flag != true {
+                r_vec.push(buffer.clone());
+                buffer.clear();
             } else {
-                ""
-            }),
-            // ロゴ表示
-            "%logo" => command::logo::rsh_logo(),
-            "%" => {
-                let _ = rsh_cursor_test();
-                Ok(Status::Success)
+                match quote_flag {
+                    true => in_quote_buffer.push(c),
+                    false => {
+                        buffer.push(c);
+                    }
+                }
             }
-            // exit: 終了用の組み込みコマンド
-            "exit" => command::exit::rsh_exit(),
-            // none: 何もなければコマンド実行
-            _ => rsh_launch(args),
-        };
-    }
-    Ok(Status::Success)
-}
-
-fn get_current_dir_as_vec() -> Vec<String> {
-    let current_dir = std::env::current_dir().unwrap();
-    let path = current_dir.as_path();
-    let mut now_dir: Vec<String> = path
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy().to_string())
-        .collect();
-
-    if now_dir.len() > 2 {
-        now_dir.remove(0);
-        now_dir.remove(0);
-        now_dir.remove(0);
-    }
-
-    now_dir
-}
-
-fn rhs_loop() -> Result<Status, RshError> {
-    let cursor = ">";
-
-    ignore_tty_signals();
-
-    loop {
-        // ui ------------------------------------------------------------------
-        print!("{}: ", username().green().bold());
-
-        // 文字色処理アルゴリズム ---------------------------------
-        let dir_s = get_current_dir_as_vec();
-        for i in dir_s {
-            print!("{}/", i.white().bold()); //.custom_color(path_base_color));
         }
-        // --------------------------------------------------------
-        print!(" {} ", cursor);
-        // ---------------------------------------------------------------------
+        r_vec.push(buffer.clone());
+        buffer.clear();
+        r_vec
+    }
 
+    fn ignore_tty_signals(&self) {
+        let sa = SigAction::new(SigHandler::SigIgn, SaFlags::empty(), SigSet::empty());
+        unsafe {
+            sigaction(Signal::SIGTSTP, &sa).unwrap();
+            sigaction(Signal::SIGTTIN, &sa).unwrap();
+            sigaction(Signal::SIGTTOU, &sa).unwrap();
+        }
+    }
+
+    fn restore_tty_signals(&self) {
+        let sa = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
+        unsafe {
+            sigaction(Signal::SIGTSTP, &sa).unwrap();
+            sigaction(Signal::SIGTTIN, &sa).unwrap();
+            sigaction(Signal::SIGTTOU, &sa).unwrap();
+        }
+    }
+
+    fn rsh_launch(&self, args: Vec<String>) -> Result<Status, RshError> {
+        print!("\n");
         std::io::stdout().flush().unwrap();
-        let line = rsh_read_line();
-        let args = rsh_split_line(line);
 
-        match rsh_execute(args) {
-            Ok(status) => match status {
-                Status::Success => continue,
-                exit @ Status::Exit => return Ok(exit),
-            },
-            err @ Err(_) => return err,
-        };
+        let pid = fork().map_err(|_| RshError::new("fork failed"))?;
+
+        let (pipe_read, pipe_write) = pipe().unwrap();
+
+        match pid {
+            ForkResult::Parent { child } => {
+                setpgid(child, child).unwrap();
+                tcsetpgrp(0, child).unwrap();
+                close(pipe_read).unwrap();
+                close(pipe_write).unwrap();
+
+                let wait_pid_result =
+                    waitpid(child, None).map_err(|err| RshError::new(&format!("{}", err)));
+
+                tcsetpgrp(0, getpgrp()).unwrap();
+
+                match wait_pid_result {
+                    Ok(WaitStatus::Exited(_, return_code)) => {
+                        // ui
+                        //println!("Exited: {}", return_code);
+                        Ok(Status::Success)
+                    }
+                    Ok(WaitStatus::Signaled(_, _, _)) => {
+                        println!("signaled");
+                        Ok(Status::Success)
+                    }
+                    Err(err) => Err(RshError::new(&err.message)),
+                    _ => Ok(Status::Success),
+                }
+            }
+            ForkResult::Child => {
+                // シグナル系処理 ---------------------------
+                self.restore_tty_signals();
+
+                close(pipe_write).unwrap();
+
+                loop {
+                    let mut buf = [0];
+                    match nix::unistd::read(pipe_read, &mut buf) {
+                        Err(e) if e == nix::Error::Sys(Errno::EINTR) => (),
+                        _ => break,
+                    }
+                }
+                close(pipe_read).unwrap();
+                // ------------------------------------------
+
+                // コマンドパース
+                let path = CString::new(args[0].to_string()).unwrap();
+
+                let c_args: Vec<CString> = args
+                    .iter()
+                    .map(|s| CString::new(s.as_bytes()).unwrap())
+                    .collect();
+
+                execvp(&path, &c_args)
+                    .map(|_| Status::Success)
+                    .map_err(|_| RshError::new(&format!("{} not found", args[0])))
+
+                // -------------
+            }
+        }
+    }
+
+    fn rsh_cursor_test(&self) -> Result<(), std::io::Error> {
+        let mut stdin = stdin();
+        let mut buffer = [0];
+        let mut rgb = 0;
+        let mut counter = 0;
+
+        terminal::enable_raw_mode()?;
+
+        // 文字の出力
+        execute!(stdout(), Print("Hello, world!"))?;
+
+        loop {
+            thread::sleep(Duration::from_millis(1));
+            // カーソルを先頭に移動し、文字を消去
+            execute!(stdout(), cursor::MoveToColumn(1))?; //, cursor::MoveToNextLine(1))?;
+
+            // 色を変えて再度出力
+            execute!(
+                stdout(),
+                SetForegroundColor(Color::Rgb { r: rgb, g: 0, b: 0 }),
+                Print("Hello, world!")
+            )?;
+
+            if rgb > 254 {
+                rgb = 0;
+            } else {
+                rgb += 1;
+            }
+
+            if counter > 254 * 5 {
+                break;
+            }
+            counter += 1;
+        }
+        // 元の状態に戻す
+        terminal::disable_raw_mode()?;
+
+        Ok(())
+    }
+
+    fn rsh_execute(&self, args: Vec<String>) -> Result<Status, RshError> {
+        if let Option::Some(arg) = args.get(0) {
+            return match arg.as_str() {
+                // cd: ディレクトリ移動の組み込みコマンド
+                "cd" => command::cd::rsh_cd(if let Option::Some(dir) = args.get(1) {
+                    dir
+                } else {
+                    ""
+                }),
+                // ロゴ表示
+                "%logo" => command::logo::rsh_logo(),
+                "%" => {
+                    let _ = self.rsh_cursor_test();
+                    Ok(Status::Success)
+                }
+                // exit: 終了用の組み込みコマンド
+                "exit" => command::exit::rsh_exit(),
+                // none: 何もなければコマンド実行
+                _ => self.rsh_launch(args),
+            };
+        }
+        Ok(Status::Success)
+    }
+
+    fn get_current_dir_as_vec(&self) -> Vec<String> {
+        let current_dir = std::env::current_dir().unwrap();
+        let path = current_dir.as_path();
+        let mut now_dir: Vec<String> = path
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy().to_string())
+            .collect();
+
+        if now_dir.len() > 2 {
+            now_dir.remove(0);
+            now_dir.remove(0);
+            now_dir.remove(0);
+        }
+
+        now_dir
+    }
+
+    pub fn rsh_loop(&mut self) -> Result<Status, RshError> {
+        self.prompt = ">".to_string();
+        let mut stdout = stdout();
+
+        self.ignore_tty_signals();
+
+        // 絶対値なので相対移動になるようになんとかする
+        let _ = execute!(stdout, MoveTo(0, 0), Clear(ClearType::All));
+
+        loop {
+            // ui ------------------------------------------------------------------
+            self.prompt = format!("{}: ", username().green().bold());
+
+            // 文字色処理アルゴリズム ---------------------------------
+            let dir_s = self.get_current_dir_as_vec();
+            for i in dir_s {
+                //print!("{}/", i.white().bold()); //.custom_color(path_base_color));
+                self.prompt = format!("{}{}/", self.prompt, i.white().bold());
+            }
+            self.prompt = format!("{} > ", self.prompt);
+
+            print!("{}", self.prompt);
+
+            // --------------------------------------------------------
+
+            std::io::stdout().flush().unwrap();
+            let line = self.rsh_read_line();
+            let args = self.rsh_split_line(line);
+
+            match self.rsh_execute(args) {
+                Ok(status) => match status {
+                    Status::Success => continue,
+                    exit @ Status::Exit => return Ok(exit),
+                },
+                err @ Err(_) => return err,
+            };
+        }
+    }
+
+    pub fn new() -> Self {
+        Self {
+            prompt: String::new(),
+            command_database: Vec::new(),
+        }
     }
 }
 
 fn main() {
-    let code = rhs_loop();
+    let mut rsh = rsh::new();
+    let code = rsh.rsh_loop();
     println!("> {:?}", code);
 }
