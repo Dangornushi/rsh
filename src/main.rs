@@ -28,6 +28,7 @@ use nix::{
 };
 use std::env;
 use std::ffi::CString;
+use std::fmt::format;
 use std::fs;
 use std::io::{stdin, stdout, Read, Write};
 use std::thread;
@@ -38,14 +39,29 @@ struct Autcomplete {
     buffer: String,
     exit: bool,
 }
-struct rsh {
+struct Rsh {
     prompt: String,
     command_database: Vec<String>,
 }
 
-impl rsh {
+impl Rsh {
     fn get_executable_commands(&mut self) {
+        let mut commands: Vec<String> = Vec::new();
+        let mut files: Vec<String> = Vec::new();
+
         self.command_database.clear();
+        if let Ok(entries) = fs::read_dir(env::current_dir().unwrap()) {
+            for entry in entries {
+                if let Ok(entry) = entry {
+                    let path = entry.path();
+                    if let Some(file_name) = path.file_name() {
+                        if let Some(file_name_str) = file_name.to_str() {
+                            files.push(file_name_str.to_string());
+                        }
+                    }
+                }
+            }
+        }
         if let Some(paths) = env::var_os("PATH") {
             for path in env::split_paths(&paths) {
                 if let Ok(entries) = fs::read_dir(path) {
@@ -55,7 +71,7 @@ impl rsh {
                             if path.is_file() {
                                 if let Some(file_name) = path.file_name() {
                                     if let Some(file_name_str) = file_name.to_str() {
-                                        self.command_database.push(file_name_str.to_string());
+                                        commands.push(file_name_str.to_string());
                                     }
                                 }
                             }
@@ -63,25 +79,54 @@ impl rsh {
                     }
                 }
             }
-            self.command_database.sort();
+            commands.sort();
         }
+        files.extend(commands);
+        self.command_database = files;
     }
 
-    fn rsh_char_search(&self, search_string: String, counter: usize) -> Result<String, RshError> {
-        let matches = self
+    fn rsh_char_search(
+        &self,
+        search_string: String,
+        counter: &mut usize,
+    ) -> Result<String, RshError> {
+        let matches: Vec<&String> = self
             .command_database
             .iter()
-            .filter(|command| command.starts_with(&search_string));
-
-        let filtered_commands: Vec<String> = matches.map(|s| s.to_string()).collect();
-        Ok(filtered_commands[counter].clone())
+            .filter(|command| command.starts_with(&search_string))
+            .collect();
+        match matches.len() {
+            0 => return Err(RshError::new("no matches")),
+            _ => {}
+        }
+        let filtered_commands: Vec<String> = matches.iter().map(|s| s.to_string()).collect();
+        if *counter >= filtered_commands.len() {
+            *counter = 0;
+            return Ok(filtered_commands[*counter].clone());
+        }
+        Ok(filtered_commands[*counter].clone())
     }
+
+    fn join_with_spaces(&self, vec: Vec<String>) -> String {
+        let mut r_string = String::new();
+        for i in 0..vec.len() {
+            r_string = format!("{}{} ", r_string, vec[i]);
+        }
+        r_string
+    }
+
     fn rsh_read_line(&mut self) -> String {
         let mut buffer = String::new();
         let mut stdout = stdout();
         let mut pushed_tab = false;
         let mut stack_buffer = String::new();
         let mut tab_counter = 0;
+        let mut space_counter = 0;
+
+        let mut input_buffer: Vec<String> = Vec::new();
+        let mut out_buffer = String::new();
+        let mut ghost_auto_complete = false;
+
         enable_raw_mode().unwrap();
 
         loop {
@@ -92,6 +137,18 @@ impl rsh {
                 state: _,
             }) = read().unwrap()
             {
+                // コマンドDBの取得
+                self.get_executable_commands();
+
+                if self
+                    .command_database
+                    .binary_search_by(|cmd| cmd.as_str().cmp(&buffer))
+                    .is_ok()
+                {
+                    ghost_auto_complete = true;
+                } else {
+                    ghost_auto_complete = false;
+                }
                 match code {
                     KeyCode::Tab => {
                         if !pushed_tab {
@@ -99,11 +156,11 @@ impl rsh {
                             stack_buffer = buffer.clone();
                         }
                         // コマンドDBの取得
-                        self.get_executable_commands();
+                        //        self.get_executable_commands();
 
                         // 予測されるコマンドを取得
                         if let Ok(autocomplete) =
-                            self.rsh_char_search(stack_buffer.clone(), tab_counter)
+                            self.rsh_char_search(stack_buffer.clone(), &mut tab_counter)
                         {
                             buffer = autocomplete;
                         }
@@ -111,7 +168,46 @@ impl rsh {
                         pushed_tab = true;
                         tab_counter += 1;
                     }
-                    KeyCode::Enter => break,
+                    KeyCode::Backspace => {
+                        if pushed_tab {
+                            // 予測変換をキャンセルさせる
+                            buffer = stack_buffer.clone();
+                            pushed_tab = false;
+                            tab_counter = 0;
+                        } else {
+                            // input_bufferもbufferもからの場合は何もしない
+                            if buffer.len() == 0 && input_buffer.len() == 0 {
+                                continue;
+                            }
+                            // 削除された文字がスペースであればinput_iterを戻す
+                            if buffer.ends_with(' ') {
+                                space_counter -= 1;
+                                input_buffer.pop();
+                            } else if buffer.len() == 0 {
+                                // bufferが空の場合はinput_bufferから取り出す
+                                buffer = input_buffer.pop().unwrap();
+                                space_counter -= 1;
+                            } else {
+                                buffer.pop();
+                            }
+                        }
+                    }
+                    KeyCode::Enter => {
+                        /*
+                                                if ghost_auto_complete {
+                                                    buffer = stack_buffer.clone();
+                                                    ghost_auto_complete = false;
+                                                    ghost_auto_complete = true;
+                                                } else {
+                        */
+                        break;
+                        //                        }
+                    }
+                    KeyCode::Char(' ') => {
+                        input_buffer.push(buffer.clone());
+                        space_counter += 1;
+                        buffer.clear();
+                    }
                     _ => {
                         // TABの直後に文字が入力された場合
                         if pushed_tab {
@@ -120,30 +216,58 @@ impl rsh {
                             pushed_tab = false;
                             tab_counter = 0;
                         }
-                        buffer = match code {
+                        match code {
                             KeyCode::Backspace => {
-                                buffer.pop();
-                                buffer.clone()
+                                // 削除された文字がスペースであればinput_iterを戻す
+                                if buffer.ends_with(' ') {
+                                    space_counter -= 1;
+                                    input_buffer.pop();
+                                } else {
+                                    buffer.pop();
+                                }
                             }
-                            KeyCode::Char(c) => format!("{}{}", buffer, c),
-                            _ => buffer,
+                            KeyCode::Char(c) => {
+                                buffer = format!("{}{}", buffer, c);
+                            }
+                            _ => {}
                         };
                     }
                 }
             }
-
             execute!(
                 stdout,
                 MoveToColumn(0),
+                SetForegroundColor(Color::White),
                 Clear(ClearType::UntilNewLine),
                 Print(self.prompt.clone()),
-                Print(buffer.clone()),
             )
             .unwrap();
-            std::io::stdout().flush().unwrap();
+            out_buffer = format!(
+                "{}{}",
+                if input_buffer.len() > 0 {
+                    self.join_with_spaces(input_buffer.clone())
+                } else {
+                    "".to_string()
+                },
+                buffer
+            );
+
+            if ghost_auto_complete {
+                // 色を変えて再度出力
+                execute!(
+                    stdout,
+                    SetForegroundColor(Color::Red),
+                    Print(out_buffer.clone()),
+                )
+                .unwrap();
+                std::io::stdout().flush().unwrap();
+            } else {
+                execute!(stdout, Print(out_buffer.clone()),).unwrap();
+                std::io::stdout().flush().unwrap();
+            }
         }
         disable_raw_mode().unwrap();
-        return buffer;
+        return out_buffer;
     }
 
     fn rsh_split_line(&self, line: String) -> Vec<String> {
@@ -270,8 +394,8 @@ impl rsh {
     }
 
     fn rsh_cursor_test(&self) -> Result<(), std::io::Error> {
-        let mut stdin = stdin();
-        let mut buffer = [0];
+        let stdin = stdin();
+        let buffer = [0];
         let mut rgb = 0;
         let mut counter = 0;
 
@@ -313,11 +437,16 @@ impl rsh {
         if let Option::Some(arg) = args.get(0) {
             return match arg.as_str() {
                 // cd: ディレクトリ移動の組み込みコマンド
-                "cd" => command::cd::rsh_cd(if let Option::Some(dir) = args.get(1) {
-                    dir
-                } else {
-                    ""
-                }),
+                "cd" => {
+                    let r_code = command::cd::rsh_cd(if let Option::Some(dir) = args.get(1) {
+                        dir
+                    } else {
+                        ""
+                    });
+                    print!("\n");
+                    std::io::stdout().flush().unwrap();
+                    r_code
+                }
                 // ロゴ表示
                 "%logo" => command::logo::rsh_logo(),
                 "%" => {
@@ -398,7 +527,7 @@ impl rsh {
 }
 
 fn main() {
-    let mut rsh = rsh::new();
+    let mut rsh = Rsh::new();
     let code = rsh.rsh_loop();
     println!("> {:?}", code);
 }
