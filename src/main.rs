@@ -45,6 +45,7 @@ struct rsh {
 
 impl rsh {
     fn get_executable_commands(&mut self) {
+        self.command_database.clear();
         if let Some(paths) = env::var_os("PATH") {
             for path in env::split_paths(&paths) {
                 if let Ok(entries) = fs::read_dir(path) {
@@ -62,28 +63,25 @@ impl rsh {
                     }
                 }
             }
+            self.command_database.sort();
         }
     }
 
-    fn rsh_char_search(&self, search_string: String) -> Result<String, RshError> {
-        let mut autocomplete = Autcomplete {
-            buffer: String::new(),
-            exit: false,
-        };
+    fn rsh_char_search(&self, search_string: String, counter: usize) -> Result<String, RshError> {
+        let matches = self
+            .command_database
+            .iter()
+            .filter(|command| command.starts_with(&search_string));
 
-        for command in &self.command_database {
-            if command.starts_with(&search_string) {
-                return Ok(command.clone());
-            }
-        }
-        Err(RshError::new(&format!("{} not found", search_string)))
+        let filtered_commands: Vec<String> = matches.map(|s| s.to_string()).collect();
+        Ok(filtered_commands[counter].clone())
     }
-
     fn rsh_read_line(&mut self) -> String {
         let mut buffer = String::new();
         let mut stdout = stdout();
         let mut pushed_tab = false;
         let mut stack_buffer = String::new();
+        let mut tab_counter = 0;
         enable_raw_mode().unwrap();
 
         loop {
@@ -96,25 +94,31 @@ impl rsh {
             {
                 match code {
                     KeyCode::Tab => {
-                        // 文字の出力
                         if !pushed_tab {
+                            // 現時点で入力されている文字のバックアップ
                             stack_buffer = buffer.clone();
                         }
-
+                        // コマンドDBの取得
                         self.get_executable_commands();
-                        if let Ok(autocomplete) = self.rsh_char_search(stack_buffer.clone()) {
+
+                        // 予測されるコマンドを取得
+                        if let Ok(autocomplete) =
+                            self.rsh_char_search(stack_buffer.clone(), tab_counter)
+                        {
                             buffer = autocomplete;
                         }
 
                         pushed_tab = true;
+                        tab_counter += 1;
                     }
-                    KeyCode::Enter => {
-                        break;
-                    }
+                    KeyCode::Enter => break,
                     _ => {
+                        // TABの直後に文字が入力された場合
                         if pushed_tab {
+                            // 予測変換をキャンセルさせる
                             buffer = stack_buffer.clone();
                             pushed_tab = false;
+                            tab_counter = 0;
                         }
                         buffer = match code {
                             KeyCode::Backspace => {
@@ -128,7 +132,6 @@ impl rsh {
                 }
             }
 
-            // 絶対値なので相対移動になるようになんとかする
             execute!(
                 stdout,
                 MoveToColumn(0),
