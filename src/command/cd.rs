@@ -5,9 +5,10 @@ use std::path::Path;
 pub fn rsh_cd(dir: &str) -> Result<Status, RshError> {
     if !dir.is_empty() {
         // TODO: エラーハンドリング
-        chdir(Path::new(dir))
+        let r = chdir(Path::new(dir))
             .map(|_| Status::Success)
-            .map_err(|err| RshError::new(&err.to_string()))
+            .map_err(|err| RshError::new(&err.to_string()));
+        r
     } else {
         Err(RshError::new("rsh: expected arguments to cd\n"))
     }

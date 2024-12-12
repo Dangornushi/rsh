@@ -6,6 +6,7 @@ use crossterm::cursor::MoveRight;
 use crossterm::cursor::MoveTo;
 use crossterm::event::read;
 use crossterm::event::KeyEvent;
+use crossterm::style::SetColors;
 use crossterm::{
     cursor,
     cursor::MoveLeft,
@@ -28,6 +29,7 @@ use nix::{
 };
 use std::env;
 use std::ffi::CString;
+use std::fmt::format;
 use std::fs;
 use std::io::{stdin, stdout, Read, Write};
 use std::thread;
@@ -67,15 +69,97 @@ impl rsh {
         }
     }
 
-    fn rsh_char_search(&self, search_string: String, counter: usize) -> Result<String, RshError> {
+    fn get_directory_contents(&mut self, path: &str) {
+        let mut contents = Vec::new();
+        if let Ok(entries) = fs::read_dir(path) {
+            for entry in entries {
+                if let Ok(entry) = entry {
+                    let path = entry.path();
+                    if let Some(file_name) = path.file_name() {
+                        if let Some(file_name_str) = file_name.to_str() {
+                            contents.push(file_name_str.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        contents.sort();
+        self.command_database.splice(0..0, contents);
+    }
+
+    fn rsh_char_search(
+        &self,
+        search_string: String,
+        counter: &mut usize,
+    ) -> Result<String, RshError> {
         let matches = self
             .command_database
             .iter()
             .filter(|command| command.starts_with(&search_string));
 
         let filtered_commands: Vec<String> = matches.map(|s| s.to_string()).collect();
-        Ok(filtered_commands[counter].clone())
+        if filtered_commands.clone().len() <= *counter {
+            *counter = 0;
+        }
+        Ok(filtered_commands[*counter].clone())
     }
+
+    fn set_prompt_color(&self, color_code: String) -> Result<(), RshError> {
+        if color_code.len() != 7 || !color_code.starts_with('#') {
+            return Err(RshError::new("Invalid color code"));
+        }
+
+        let r = u8::from_str_radix(&color_code[1..3], 16)
+            .map_err(|_| RshError::new("Invalid red value"))?;
+        let g = u8::from_str_radix(&color_code[3..5], 16)
+            .map_err(|_| RshError::new("Invalid green value"))?;
+        let b = u8::from_str_radix(&color_code[5..7], 16)
+            .map_err(|_| RshError::new("Invalid blue value"))?;
+
+        let mut stdout = stdout();
+        execute!(stdout, SetForegroundColor(Color::Rgb { r, g, b }))
+            .map_err(|_| RshError::new("Failed to set color"))?;
+
+        Ok(())
+    }
+
+    fn set_prompt(&mut self) -> Result<(), RshError> {
+        let mut stdout = stdout();
+        // Set the prompt color
+        self.set_prompt_color("#674196".to_string())?;
+        execute!(
+            stdout,
+            MoveToColumn(0),
+            Clear(ClearType::UntilNewLine),
+            Print(username().bold()),
+            Print(" "),
+        )
+        .map_err(|_| RshError::new("Failed to print directory"))?;
+
+        self.set_prompt_color("#eaf4fc".to_string())?;
+
+        // Display the current directory in the prompt
+        let dir_s = self.get_current_dir_as_vec();
+        for dir in dir_s {
+            execute!(stdout, Print(dir), Print("/"))
+                .map_err(|_| RshError::new("Failed to print directory"))?;
+        }
+
+        execute!(stdout, Print(" > ")).map_err(|_| RshError::new("Failed to print directory"))?;
+
+        std::io::stdout().flush().unwrap();
+        Ok(())
+    }
+
+    fn eprintln(&self, message: &str) {
+        let mut stderr = std::io::stderr();
+        execute!(stderr, Print("\n"), Print(message), Print("\n"))
+            .map_err(|_| RshError::new("Failed to print directory"))
+            .unwrap();
+
+        std::io::stdout().flush().unwrap();
+    }
+
     fn rsh_read_line(&mut self) -> String {
         let mut buffer = String::new();
         let mut stdout = stdout();
@@ -83,8 +167,13 @@ impl rsh {
         let mut stack_buffer = String::new();
         let mut tab_counter = 0;
         enable_raw_mode().unwrap();
+        self.get_executable_commands();
+        self.get_directory_contents("./");
 
+        let _ = self.set_prompt();
         loop {
+            //if crossterm::event::poll(Duration::from_millis(10)).unwrap() {
+            // キー入力の取得
             if let Event::Key(KeyEvent {
                 code,
                 modifiers: _,
@@ -100,10 +189,11 @@ impl rsh {
                         }
                         // コマンドDBの取得
                         self.get_executable_commands();
+                        self.get_directory_contents("./");
 
                         // 予測されるコマンドを取得
                         if let Ok(autocomplete) =
-                            self.rsh_char_search(stack_buffer.clone(), tab_counter)
+                            self.rsh_char_search(stack_buffer.clone(), &mut tab_counter)
                         {
                             buffer = autocomplete;
                         }
@@ -132,15 +222,64 @@ impl rsh {
                 }
             }
 
-            execute!(
-                stdout,
-                MoveToColumn(0),
-                Clear(ClearType::UntilNewLine),
-                Print(self.prompt.clone()),
-                Print(buffer.clone()),
-            )
-            .unwrap();
-            std::io::stdout().flush().unwrap();
+            // キー入力がない場合
+            let matches = self
+                .command_database
+                .iter()
+                .filter(|command| command.starts_with(&buffer));
+
+            let filtered_commands: Vec<String> = matches.map(|s| s.to_string()).collect();
+
+            let _ = self.set_prompt();
+            if filtered_commands.len() > 0 {
+                // コマンドが見つかった場合
+                // 予測変換の表示
+
+                /* TAB押下時と同様 */
+                if !pushed_tab {
+                    // 現時点で入力されている文字のバックアップ
+                    stack_buffer = buffer.clone();
+                }
+                // コマンドDBの取得
+                self.get_executable_commands();
+                self.get_directory_contents("./");
+
+                let print_buf = buffer.clone();
+                // 予測されるコマンドを取得
+                if let Ok(autocomplete) =
+                    self.rsh_char_search(stack_buffer.clone(), &mut tab_counter)
+                {
+                    buffer = autocomplete;
+                }
+
+                pushed_tab = true;
+                //tab_counter += 1;
+
+                execute!(stdout, Print(print_buf.clone()),).unwrap();
+                self.set_prompt_color("#9ea1a3".to_string()).unwrap();
+                if print_buf.len() >= buffer.len() {
+                } else {
+                    execute!(
+                        stdout,
+                        // 予想される文字
+                        Print(buffer[print_buf.len()..].to_string()),
+                        // カーソルをbufferまで移動
+                        MoveLeft(buffer[print_buf.len()..].to_string().len() as u16)
+                    )
+                    .unwrap();
+                }
+                std::io::stdout().flush().unwrap();
+            } else {
+                // 予測変換がない場合
+                execute!(
+                    stdout,
+                    SetForegroundColor(Color::Red),
+                    Print(buffer.clone()),
+                    SetForegroundColor(Color::White),
+                )
+                .unwrap();
+                std::io::stdout().flush().unwrap();
+            }
         }
         disable_raw_mode().unwrap();
         return buffer;
@@ -269,61 +408,27 @@ impl rsh {
         }
     }
 
-    fn rsh_cursor_test(&self) -> Result<(), std::io::Error> {
-        let mut stdin = stdin();
-        let mut buffer = [0];
-        let mut rgb = 0;
-        let mut counter = 0;
-
-        terminal::enable_raw_mode()?;
-
-        // 文字の出力
-        execute!(stdout(), Print("Hello, world!"))?;
-
-        loop {
-            thread::sleep(Duration::from_millis(1));
-            // カーソルを先頭に移動し、文字を消去
-            execute!(stdout(), cursor::MoveToColumn(1))?; //, cursor::MoveToNextLine(1))?;
-
-            // 色を変えて再度出力
-            execute!(
-                stdout(),
-                SetForegroundColor(Color::Rgb { r: rgb, g: 0, b: 0 }),
-                Print("Hello, world!")
-            )?;
-
-            if rgb > 254 {
-                rgb = 0;
-            } else {
-                rgb += 1;
-            }
-
-            if counter > 254 * 5 {
-                break;
-            }
-            counter += 1;
-        }
-        // 元の状態に戻す
-        terminal::disable_raw_mode()?;
-
-        Ok(())
-    }
-
     fn rsh_execute(&self, args: Vec<String>) -> Result<Status, RshError> {
         if let Option::Some(arg) = args.get(0) {
             return match arg.as_str() {
                 // cd: ディレクトリ移動の組み込みコマンド
-                "cd" => command::cd::rsh_cd(if let Option::Some(dir) = args.get(1) {
+                "cd" =>
+                match
+                command::cd::rsh_cd(if let Option::Some(dir) = args.get(1) {
                     dir
                 } else {
-                    ""
-                }),
+                    "./"
+                }) {
+                    Err(err) => {
+                        self.eprintln(&format!("Error: {}", err.message));
+                        Ok(Status::Success)
+                    }
+                    _ => Ok(Status::Success),
+
+                }
+                ,
                 // ロゴ表示
                 "%logo" => command::logo::rsh_logo(),
-                "%" => {
-                    let _ = self.rsh_cursor_test();
-                    Ok(Status::Success)
-                }
                 // exit: 終了用の組み込みコマンド
                 "exit" => command::exit::rsh_exit(),
                 // none: 何もなければコマンド実行
@@ -361,17 +466,15 @@ impl rsh {
 
         loop {
             // ui ------------------------------------------------------------------
-            self.prompt = format!("{}: ", username().green().bold());
 
             // 文字色処理アルゴリズム ---------------------------------
             let dir_s = self.get_current_dir_as_vec();
             for i in dir_s {
-                //print!("{}/", i.white().bold()); //.custom_color(path_base_color));
                 self.prompt = format!("{}{}/", self.prompt, i.white().bold());
             }
             self.prompt = format!("{} > ", self.prompt);
 
-            print!("{}", self.prompt);
+            //            print!("{}", self.prompt);
 
             // --------------------------------------------------------
 
