@@ -95,8 +95,10 @@ impl Rsh {
         let home_dir =
             env::var("HOME").map_err(|_| RshError::new("Failed to get HOME directory"))?;
         let rshenv_path = format!("{}/.rshenv", home_dir);
-
-        let data = fs::read_to_string(&rshenv_path).or_else(|_| {
+        let data =
+            fs::read_to_string(&rshenv_path).map_err(|_| RshError::new("Failed to open rshenv"))?;
+        /*
+        .or_else(|_| {
             let home_dir =
                 env::var("HOME").map_err(|_| RshError::new("Failed to get HOME directory"))?;
             let rshenv_path = format!("{}/.rshenv", home_dir);
@@ -104,6 +106,7 @@ impl Rsh {
                 .map_err(|_| RshError::new("Failed to create .rshenv file"))?;
             Ok(String::new())
         })?;
+        */
         self.env_database = data.lines().map(|line| line.to_string()).collect();
 
         Ok(())
@@ -218,8 +221,9 @@ impl Rsh {
 
     fn eprintln(&self, message: &str) {
         let mut stderr = std::io::stderr();
+        std::io::stdout().flush().unwrap();
         execute!(stderr, Print("\n"), Print(message), Print("\n"))
-            .map_err(|_| RshError::new("Failed to print directory"))
+            .map_err(|_| RshError::new("Failed to print error message"))
             .unwrap();
 
         std::io::stdout().flush().unwrap();
@@ -473,7 +477,7 @@ impl Rsh {
                         Ok(Status::Success)
                     }
                     Err(err) => {
-                        self.eprintln(&format!(">{}", err.message));
+                        self.eprintln(&format!("rsh: {}", err.message));
                         Ok(Status::Success)
                     }
                     _ => Ok(Status::Success),
@@ -505,7 +509,7 @@ impl Rsh {
 
                 execvp(&path, &c_args)
                     .map(|_| Status::Success)
-                    .map_err(|_| RshError::new(&format!("{} not found", args[0])))
+                    .map_err(|_| RshError::new(&format!("{} is not found", args[0])))
 
                 // -------------
             }
@@ -590,5 +594,5 @@ impl Rsh {
 fn main() {
     let mut rsh = Rsh::new();
     let code = rsh.rsh_loop();
-    println!("> {:?}", code);
+    println!("rsh: {:?}", code);
 }
