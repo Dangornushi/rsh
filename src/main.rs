@@ -4,6 +4,7 @@ mod log;
 
 use crate::log::log_maneger::csv_reader;
 use crate::log::log_maneger::csv_writer;
+use crate::log::log_maneger::History;
 use colored::Colorize;
 use crossterm::cursor::MoveTo;
 use crossterm::event::read;
@@ -30,17 +31,25 @@ use std::env;
 use std::ffi::CString;
 use std::fs;
 use std::io::{stdout, Write};
+use std::path;
 use whoami::username;
 
 struct Rsh {
     prompt: String,
     env_database: Vec<String>,
-    history_database: Vec<String>,
+    history_database: Vec<History>,
     command_database: Vec<String>,
     return_code: i32,
 }
 
 impl Rsh {
+    fn open_profile(&self, path: &str) -> Result<String, RshError> {
+        let home_dir = env::var("HOME")
+            .map_err(|_| env::var("."))
+            .map_err(|_| RshError::new("Failed to get HOME directory"))?;
+        Ok(format!("{}/{}", home_dir, path))
+    }
+
     fn get_executable_commands(&mut self) {
         self.command_database.clear();
         if let Some(paths) = env::var_os("PATH") {
@@ -87,8 +96,15 @@ impl Rsh {
             env::var("HOME").map_err(|_| RshError::new("Failed to get HOME directory"))?;
         let rshenv_path = format!("{}/.rshenv", home_dir);
 
-
-        self.env_database = csv_reader(&rshenv_path.as_str());
+        let data = fs::read_to_string(&rshenv_path).or_else(|_| {
+            let home_dir =
+                env::var("HOME").map_err(|_| RshError::new("Failed to get HOME directory"))?;
+            let rshenv_path = format!("{}/.rshenv", home_dir);
+            fs::File::create(&rshenv_path)
+                .map_err(|_| RshError::new("Failed to create .rshenv file"))?;
+            Ok(String::new())
+        })?;
+        self.env_database = data.lines().map(|line| line.to_string()).collect();
 
         Ok(())
     }
@@ -99,10 +115,13 @@ impl Rsh {
             .map_err(|_| RshError::new("Failed to get HOME directory"))?;
         let history_path = format!("{}/.rsh_history", home_dir);
 
-
+        self.history_database =
+            csv_reader(&history_path).map_err(|_| RshError::new("Failed to get HOME directory"))?;
+        /*
         let data = fs::read_to_string(&history_path)
             .map_err(|_| RshError::new("Failed to read .rshenv file"));
         self.history_database = data?.lines().map(|line| line.to_string()).collect();
+        */
         Ok(())
     }
 
@@ -217,8 +236,6 @@ impl Rsh {
 
         let _ = self.set_prompt();
         loop {
-            let _ = self.get_rshhistory_contents();
-            self.get_executable_commands();
             self.get_directory_contents("./");
 
             // キー入力の取得
@@ -293,13 +310,10 @@ impl Rsh {
             if filtered_commands.len() == 0 {
                 for env_path in self.env_database.clone() {
                     // command_databaseの中からenv_path/bufferで始まるものを取得
-                    let matches = self
-                        .command_database
-                        .iter()
-                        .filter(|command| {
-                            let command_path = format!("{}/{}", env_path, buffer);
-                            command.starts_with(&buffer) || command_path.starts_with(&buffer)
-                        });
+                    let matches = self.command_database.iter().filter(|command| {
+                        let command_path = format!("{}/{}", env_path, buffer);
+                        command.starts_with(&buffer) || command_path.starts_with(&buffer)
+                    });
 
                     // 上記を配列に変換
                     filtered_commands = matches.map(|s| s.to_string()).collect();
@@ -428,7 +442,10 @@ impl Rsh {
 
     fn rsh_launch(&mut self, args: Vec<String>) -> Result<Status, RshError> {
         let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        csv_writer(args[0].to_string(), time)?;
+        let path = self.open_profile(".rsh_history")?;
+
+        csv_writer(args.join(" "), time, &path)
+            .map_err(|_| RshError::new("Failed to write history"))?;
 
         let pid = fork().map_err(|_| RshError::new("fork failed"))?;
         let (pipe_read, pipe_write) = pipe().unwrap();
@@ -455,7 +472,10 @@ impl Rsh {
                         println!("signaled");
                         Ok(Status::Success)
                     }
-                    Err(err) => Err(RshError::new(&err.message)),
+                    Err(err) => {
+                        self.eprintln(&format!(">{}", err.message));
+                        Ok(Status::Success)
+                    }
                     _ => Ok(Status::Success),
                 }
             }
@@ -528,7 +548,6 @@ impl Rsh {
         let mut stdout = stdout();
 
         self.ignore_tty_signals();
-        self.get_rshenv_contents()?;
 
         execute!(stdout, Print("\n"),)
             .map_err(|_| RshError::new("Failed to print directory"))
@@ -542,6 +561,10 @@ impl Rsh {
         loop {
             let line = self.rsh_read_line();
             let args = self.rsh_split_line(line);
+
+            self.get_executable_commands();
+            self.get_rshhistory_contents()?;
+            self.get_rshenv_contents()?;
 
             match self.rsh_execute(args) {
                 Ok(status) => match status {
