@@ -2,7 +2,8 @@ mod command;
 mod error;
 mod log;
 
-use crate::log::log_maneger::log_maneger;
+use crate::log::log_maneger::csv_reader;
+use crate::log::log_maneger::csv_writer;
 use colored::Colorize;
 use crossterm::cursor::MoveTo;
 use crossterm::event::read;
@@ -30,19 +31,16 @@ use std::ffi::CString;
 use std::fs;
 use std::io::{stdout, Write};
 use whoami::username;
-use chrono::Local;
 
-struct Autcomplete {
-    buffer: String,
-    exit: bool,
-}
-struct rsh {
+struct Rsh {
     prompt: String,
+    env_database: Vec<String>,
+    history_database: Vec<String>,
     command_database: Vec<String>,
     return_code: i32,
 }
 
-impl rsh {
+impl Rsh {
     fn get_executable_commands(&mut self) {
         self.command_database.clear();
         if let Some(paths) = env::var_os("PATH") {
@@ -84,15 +82,28 @@ impl rsh {
         self.command_database.splice(0..0, contents);
     }
 
-    fn get_rshenv_contents(&mut self) -> Result<String, RshError> {
-        let home_dir = env::var("HOME").map_err(|_| RshError::new("Failed to get HOME directory"))?;
+    fn get_rshenv_contents(&mut self) -> Result<(), RshError> {
+        let home_dir =
+            env::var("HOME").map_err(|_| RshError::new("Failed to get HOME directory"))?;
         let rshenv_path = format!("{}/.rshenv", home_dir);
 
-        let data = fs::read_to_string(&rshenv_path).map_err(|_| RshError::new("Failed to read .rshenv file"));
 
-        println!("{:?}", data);
+        self.env_database = csv_reader(&rshenv_path.as_str());
 
-        data
+        Ok(())
+    }
+
+    fn get_rshhistory_contents(&mut self) -> Result<(), RshError> {
+        let home_dir = env::var("HOME")
+            .map_err(|_| env::var("."))
+            .map_err(|_| RshError::new("Failed to get HOME directory"))?;
+        let history_path = format!("{}/.rsh_history", home_dir);
+
+
+        let data = fs::read_to_string(&history_path)
+            .map_err(|_| RshError::new("Failed to read .rshenv file"));
+        self.history_database = data?.lines().map(|line| line.to_string()).collect();
+        Ok(())
     }
 
     fn get_current_dir_as_vec(&self) -> Vec<String> {
@@ -123,7 +134,7 @@ impl rsh {
             .filter(|command| command.starts_with(&search_string));
 
         let filtered_commands: Vec<String> = matches.map(|s| s.to_string()).collect();
-        match  filtered_commands.len() {
+        match filtered_commands.len() {
             0 => {
                 return Err(RshError::new("No command found"));
             }
@@ -178,7 +189,8 @@ impl rsh {
                 .map_err(|_| RshError::new("Failed to print directory"))?;
         }
 
-        execute!(stdout, Print(" ["),Print(self.return_code), Print("] > ")).map_err(|_| RshError::new("Failed to print directory"))?;
+        execute!(stdout, Print(" ["), Print(self.return_code), Print("] > "))
+            .map_err(|_| RshError::new("Failed to print directory"))?;
 
         std::io::stdout().flush().unwrap();
         // --------------------------------------------------------
@@ -202,11 +214,13 @@ impl rsh {
         let mut tab_counter = 0;
         let mut space_counter = 0;
         enable_raw_mode().unwrap();
-        self.get_executable_commands();
-        self.get_directory_contents("./");
 
         let _ = self.set_prompt();
         loop {
+            let _ = self.get_rshhistory_contents();
+            self.get_executable_commands();
+            self.get_directory_contents("./");
+
             // キー入力の取得
             if let Event::Key(KeyEvent {
                 code,
@@ -227,7 +241,8 @@ impl rsh {
 
                         // 予測されるコマンドを取得
                         if let Ok(autocomplete) =
-                            self.rsh_char_search(stack_buffer.clone(), &mut tab_counter) {
+                            self.rsh_char_search(stack_buffer.clone(), &mut tab_counter)
+                        {
                             buffer = autocomplete;
                         }
 
@@ -265,12 +280,31 @@ impl rsh {
             }
 
             // キー入力がない場合
+            // command_databaseの中からbufferで始まるものを取得
             let matches = self
                 .command_database
                 .iter()
                 .filter(|command| command.starts_with(&buffer));
 
-            let filtered_commands: Vec<String> = matches.map(|s| s.to_string()).collect();
+            // 上記を配列に変換
+            let mut filtered_commands: Vec<String> = matches.map(|s| s.to_string()).collect();
+
+            // もしもコマンドが見つからなかった場合
+            if filtered_commands.len() == 0 {
+                for env_path in self.env_database.clone() {
+                    // command_databaseの中からenv_path/bufferで始まるものを取得
+                    let matches = self
+                        .command_database
+                        .iter()
+                        .filter(|command| {
+                            let command_path = format!("{}/{}", env_path, buffer);
+                            command.starts_with(&buffer) || command_path.starts_with(&buffer)
+                        });
+
+                    // 上記を配列に変換
+                    filtered_commands = matches.map(|s| s.to_string()).collect();
+                }
+            }
 
             let _ = self.set_prompt();
             let print_buf = buffer.clone();
@@ -394,7 +428,7 @@ impl rsh {
 
     fn rsh_launch(&mut self, args: Vec<String>) -> Result<Status, RshError> {
         let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        let _ = log_maneger(args[0].to_string(), time);
+        csv_writer(args[0].to_string(), time)?;
 
         let pid = fork().map_err(|_| RshError::new("fork failed"))?;
         let (pipe_read, pipe_write) = pipe().unwrap();
@@ -494,7 +528,7 @@ impl rsh {
         let mut stdout = stdout();
 
         self.ignore_tty_signals();
-        self.get_rshenv_contents();
+        self.get_rshenv_contents()?;
 
         execute!(stdout, Print("\n"),)
             .map_err(|_| RshError::new("Failed to print directory"))
@@ -506,7 +540,6 @@ impl rsh {
         let _ = execute!(stdout, MoveTo(0, 0), Clear(ClearType::All));
 
         loop {
-
             let line = self.rsh_read_line();
             let args = self.rsh_split_line(line);
 
@@ -523,6 +556,8 @@ impl rsh {
     pub fn new() -> Self {
         Self {
             prompt: String::new(),
+            env_database: Vec::new(),
+            history_database: Vec::new(),
             command_database: Vec::new(),
             return_code: 0,
         }
@@ -530,7 +565,7 @@ impl rsh {
 }
 
 fn main() {
-    let mut rsh = rsh::new();
+    let mut rsh = Rsh::new();
     let code = rsh.rsh_loop();
     println!("> {:?}", code);
 }
