@@ -8,3 +8,6 @@ nix="0.10.0"
 whoami="1.5.2"
 colored="2"
 crossterm="0.28.1"
+csv = "1.1"
+chrono="0.4.39"
+
