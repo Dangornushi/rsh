@@ -3,10 +3,26 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::io::{self, BufRead};
 
+
+#[derive(Clone)]
+
 pub struct History {
     command: String,
     time: String,
 }
+
+impl History {
+    pub fn new(command: String, time: String) -> Self {
+        Self { command, time }
+    }
+    pub fn get_command(&self) -> &String {
+        &self.command
+    }
+    pub fn get_time(&self) -> &String {
+        &self.time
+    }
+}
+
 pub fn csv_writer(command: String, time: String, path: &str) -> std::io::Result<()> {
     let mut file = OpenOptions::new().append(true).create(true).open(path)?;
 

@@ -50,6 +50,16 @@ impl Rsh {
         Ok(format!("{}/{}", home_dir, path))
     }
 
+    fn eprintln(&self, message: &str) {
+        let mut stderr = std::io::stderr();
+        std::io::stdout().flush().unwrap();
+        execute!(stderr, Print("\n"), Print(message), Print("\n"))
+            .map_err(|_| RshError::new("Failed to print error message"))
+            .unwrap();
+
+        std::io::stdout().flush().unwrap();
+    }
+
     fn get_executable_commands(&mut self) {
         self.command_database.clear();
         if let Some(paths) = env::var_os("PATH") {
@@ -92,39 +102,19 @@ impl Rsh {
     }
 
     fn get_rshenv_contents(&mut self) -> Result<(), RshError> {
-        let home_dir =
-            env::var("HOME").map_err(|_| RshError::new("Failed to get HOME directory"))?;
-        let rshenv_path = format!("{}/.rshenv", home_dir);
+        let rshenv_path = self.open_profile(".rshenv")?;
         let data =
             fs::read_to_string(&rshenv_path).map_err(|_| RshError::new("Failed to open rshenv"))?;
-        /*
-        .or_else(|_| {
-            let home_dir =
-                env::var("HOME").map_err(|_| RshError::new("Failed to get HOME directory"))?;
-            let rshenv_path = format!("{}/.rshenv", home_dir);
-            fs::File::create(&rshenv_path)
-                .map_err(|_| RshError::new("Failed to create .rshenv file"))?;
-            Ok(String::new())
-        })?;
-        */
         self.env_database = data.lines().map(|line| line.to_string()).collect();
 
         Ok(())
     }
 
     fn get_rshhistory_contents(&mut self) -> Result<(), RshError> {
-        let home_dir = env::var("HOME")
-            .map_err(|_| env::var("."))
-            .map_err(|_| RshError::new("Failed to get HOME directory"))?;
-        let history_path = format!("{}/.rsh_history", home_dir);
+        let history_path = self.open_profile(".rsh_history")?;
 
         self.history_database =
-            csv_reader(&history_path).map_err(|_| RshError::new("Failed to get HOME directory"))?;
-        /*
-        let data = fs::read_to_string(&history_path)
-            .map_err(|_| RshError::new("Failed to read .rshenv file"));
-        self.history_database = data?.lines().map(|line| line.to_string()).collect();
-        */
+            csv_reader(&history_path).map_err(|_| RshError::new("Failed to get history path"))?;
         Ok(())
     }
 
@@ -217,16 +207,6 @@ impl Rsh {
         std::io::stdout().flush().unwrap();
         // --------------------------------------------------------
         Ok(())
-    }
-
-    fn eprintln(&self, message: &str) {
-        let mut stderr = std::io::stderr();
-        std::io::stdout().flush().unwrap();
-        execute!(stderr, Print("\n"), Print(message), Print("\n"))
-            .map_err(|_| RshError::new("Failed to print error message"))
-            .unwrap();
-
-        std::io::stdout().flush().unwrap();
     }
 
     fn rsh_read_line(&mut self) -> String {
@@ -539,6 +519,8 @@ impl Rsh {
                 ,
                 // ロゴ表示
                 "%logo" => command::logo::rsh_logo(),
+                // history: 履歴表示の組み込みコマンド
+                "%fl" => command::history::rsh_history(self.history_database.clone()).map(|_| Status::Success),
                 // exit: 終了用の組み込みコマンド
                 "exit" => command::exit::rsh_exit(),
                 // none: 何もなければコマンド実行
