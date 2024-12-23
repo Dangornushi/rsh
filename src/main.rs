@@ -18,6 +18,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType},
 };
 use error::error::{RshError, Status};
+use nix::libc;
 use nix::sys::wait::*;
 use nix::{
     errno::Errno,
@@ -425,11 +426,6 @@ impl Rsh {
     }
 
     fn rsh_launch(&mut self, args: Vec<String>) -> Result<Status, RshError> {
-        let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        let path = self.open_profile(".rsh_history")?;
-
-        csv_writer(args.join(" "), time, &path)
-            .map_err(|_| RshError::new("Failed to write history"))?;
 
         let pid = fork().map_err(|_| RshError::new("fork failed"))?;
         let (pipe_read, pipe_write) = pipe().unwrap();
@@ -475,6 +471,17 @@ impl Rsh {
                         Err(e) if e == nix::Error::Sys(Errno::EINTR) => (),
                         _ => break,
                     }
+                    unsafe {
+                        if libc::isatty(libc::STDIN_FILENO) == 1 {
+                            let mut sigset = SigSet::empty();
+                            sigset.add(Signal::SIGINT);
+                            sigset.add(Signal::SIGQUIT);
+                            sigset.add(Signal::SIGTERM);
+                            if sigset.contains(Signal::SIGINT) {
+                                libc::_exit(0);
+                            }
+                        }
+                    }
                 }
                 close(pipe_read).unwrap();
                 // ------------------------------------------
@@ -498,6 +505,11 @@ impl Rsh {
 
     fn rsh_execute(&mut self, args: Vec<String>) -> Result<Status, RshError> {
         if let Option::Some(arg) = args.get(0) {
+        let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let path = self.open_profile(".rsh_history")?;
+
+        csv_writer(args.join(" "), time, &path)
+            .map_err(|_| RshError::new("Failed to write history"))?;
             return match arg.as_str() {
                 // cd: ディレクトリ移動の組み込みコマンド
                 "cd" =>
