@@ -14,7 +14,7 @@ use crossterm::{
     cursor::MoveToColumn,
     event::{Event, KeyCode},
     execute,
-    style::{Color, Print, SetForegroundColor},
+    style::{Color, Print, SetBackgroundColor, SetForegroundColor},
     terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType},
 };
 use error::error::{RshError, Status};
@@ -32,7 +32,6 @@ use std::env;
 use std::ffi::CString;
 use std::fs;
 use std::io::{stdout, Write};
-use std::path;
 use whoami::username;
 
 struct Rsh {
@@ -41,20 +40,37 @@ struct Rsh {
     history_database: Vec<History>,
     command_database: Vec<String>,
     return_code: i32,
+    exists_rshenv: bool,
 }
 
 impl Rsh {
     fn open_profile(&self, path: &str) -> Result<String, RshError> {
-        let home_dir = env::var("HOME")
+        let home_dir = env::current_dir()
+            .unwrap()
+            .into_os_string()
+            .into_string()
+            .map_err(|_| env::var("HOME"))
             .map_err(|_| env::var("."))
             .map_err(|_| RshError::new("Failed to get HOME directory"))?;
         Ok(format!("{}/{}", home_dir, path))
+        /*
+         */
     }
 
     fn eprintln(&self, message: &str) {
         let mut stderr = std::io::stderr();
         std::io::stdout().flush().unwrap();
-        execute!(stderr, Print("\n"), Print(message), Print("\n"))
+        execute!(stderr, Print(message), Print("\n"))
+            .map_err(|_| RshError::new("Failed to print error message"))
+            .unwrap();
+
+        std::io::stdout().flush().unwrap();
+    }
+
+    fn println(&self, message: &str) {
+        let mut stdout = std::io::stdout();
+        std::io::stdout().flush().unwrap();
+        execute!(stdout, Print(message), Print("\n"))
             .map_err(|_| RshError::new("Failed to print error message"))
             .unwrap();
 
@@ -104,10 +120,12 @@ impl Rsh {
 
     fn get_rshenv_contents(&mut self) -> Result<(), RshError> {
         let rshenv_path = self.open_profile(".rshenv")?;
+
+        //self.println(&rshenv_path.clone());
         let data =
             fs::read_to_string(&rshenv_path).map_err(|_| RshError::new("Failed to open rshenv"))?;
         self.env_database = data.lines().map(|line| line.to_string()).collect();
-
+        self.exists_rshenv = true;
         Ok(())
     }
 
@@ -146,14 +164,24 @@ impl Rsh {
             .iter()
             .filter(|command| command.starts_with(&search_string));
 
-        let filtered_commands: Vec<String> = matches.map(|s| s.to_string()).collect();
+        let history_matches: Vec<String> = self
+            .history_database
+            .iter()
+            .filter(|history| history.get_command().starts_with(&search_string))
+            .map(|history| history.get_command().to_string())
+            .collect();
+
+        let mut filtered_commands: Vec<String> =
+            history_matches.into_iter().map(|s| s.to_string()).collect();
+        filtered_commands.extend(matches.map(|s| s.to_string()));
+
         match filtered_commands.len() {
             0 => {
                 return Err(RshError::new("No command found"));
             }
             _ => {
-                if filtered_commands.clone().len() < *counter {
-                    *counter = 0;
+                if filtered_commands.clone().len() <= *counter {
+                    *counter -= 1;
                 }
                 Ok(filtered_commands[*counter].clone())
             }
@@ -183,7 +211,14 @@ impl Rsh {
         let mut stdout = stdout();
         // ui ----------------------------------------------------
         // Set the prompt color
-        self.set_prompt_color("#674196".to_string())?;
+        if self.exists_rshenv {
+            // 環境変数設定ファイルが存在する
+            // 天色
+            self.set_prompt_color("#2ca9e1".to_string())?;
+        } else {
+            // 紅緋
+            self.set_prompt_color("#e83929".to_string())?;
+        }
         execute!(
             stdout,
             MoveToColumn(0),
@@ -193,7 +228,7 @@ impl Rsh {
         )
         .map_err(|_| RshError::new("Failed to print directory"))?;
 
-        self.set_prompt_color("#eaf4fc".to_string())?;
+        self.set_prompt_color("#d1d1d1".to_string())?;
 
         // Display the current directory in the prompt
         let dir_s = self.get_current_dir_as_vec();
@@ -202,8 +237,15 @@ impl Rsh {
                 .map_err(|_| RshError::new("Failed to print directory"))?;
         }
 
-        execute!(stdout, Print(" ["), Print(self.return_code), Print("] > "))
-            .map_err(|_| RshError::new("Failed to print directory"))?;
+        // 桔梗 ききょう
+        self.set_prompt_color("#f8f8f8".to_string());
+        execute!(stdout, Print(" [".to_string())).unwrap();
+        self.set_prompt_color("#68be8d".to_string());
+        execute!(stdout, Print(self.return_code)).unwrap();
+        self.set_prompt_color("#fafafa".to_string());
+        execute!(stdout, Print("]".to_string())).unwrap();
+        // 若竹色 わかたけいろ
+        execute!(stdout, Print(" > ")).unwrap();
 
         std::io::stdout().flush().unwrap();
         // --------------------------------------------------------
@@ -240,6 +282,7 @@ impl Rsh {
                         // コマンドDBの取得
                         self.get_executable_commands();
                         self.get_directory_contents("./");
+                        self.get_rshhistory_contents().unwrap();
 
                         // 予測されるコマンドを取得
                         if let Ok(autocomplete) =
@@ -252,6 +295,13 @@ impl Rsh {
                         tab_counter += 1;
                     }
                     KeyCode::Enter => break,
+
+                    KeyCode::Char(' ') => {
+                        // TABの直後にSpaceが入力された場合
+                        buffer = format!("{} ", buffer);
+                        pushed_tab = false;
+                        space_counter += 1;
+                    }
                     _ => {
                         // TABの直後に文字が入力された場合
                         if pushed_tab {
@@ -271,7 +321,6 @@ impl Rsh {
                                 buffer.clone()
                             }
                             KeyCode::Char(' ') => {
-                                space_counter += 1;
                                 format!("{} ", buffer)
                             }
                             KeyCode::Char(c) => format!("{}{}", buffer, c),
@@ -282,6 +331,14 @@ impl Rsh {
             }
 
             // キー入力がない場合
+
+            let history_matches: Vec<String> = self
+                .history_database
+                .iter()
+                .filter(|history| history.get_command().starts_with(&buffer))
+                .map(|history| history.get_command().to_string())
+                .collect();
+
             // command_databaseの中からbufferで始まるものを取得
             let matches = self
                 .command_database
@@ -289,7 +346,9 @@ impl Rsh {
                 .filter(|command| command.starts_with(&buffer));
 
             // 上記を配列に変換
-            let mut filtered_commands: Vec<String> = matches.map(|s| s.to_string()).collect();
+            let mut filtered_commands: Vec<String> =
+                history_matches.into_iter().map(|s| s.to_string()).collect();
+            filtered_commands.extend(matches.map(|s| s.to_string()));
 
             // もしもコマンドが見つからなかった場合
             if filtered_commands.len() == 0 {
@@ -299,65 +358,37 @@ impl Rsh {
                         let command_path = format!("{}/{}", env_path, buffer);
                         command.starts_with(&buffer) || command_path.starts_with(&buffer)
                     });
-
                     // 上記を配列に変換
                     filtered_commands = matches.map(|s| s.to_string()).collect();
                 }
             }
 
             let _ = self.set_prompt();
-            let print_buf = buffer.clone();
-            let print_buf_parts: Vec<&str> = print_buf.split_whitespace().collect();
+            let print_buf_parts: Vec<String> = self.rsh_split_line(buffer.clone()); //print_buf.split_whitespace().collect();
 
             let mut tmp = 0;
+
+            // 瓶覗 かめのぞき
+            // コマンドの色
+            self.set_prompt_color("#a2d7dd".to_string()).unwrap();
             for i in &print_buf_parts {
                 execute!(stdout, Print(i)).unwrap();
                 if tmp < space_counter {
+                    tmp += 1;
                     execute!(stdout, Print(" ")).unwrap();
+                    // コマンド引数の色
+                    self.set_prompt_color("#ececec".to_string()).unwrap();
                 }
-                tmp += 1;
             }
-
             if filtered_commands.len() > 0 {
-                // コマンドが見つかった場合
-                // 予測変換の表示
+                // 部分的に一致しているコマンドの先頭の要素からbufferから先を取得
+                let print_buf_suffix = filtered_commands[0][buffer.len()..].to_string();
 
-                /* TAB押下時と同様 */
-                if !pushed_tab {
-                    // 現時点で入力されている文字のバックアップ
-                    stack_buffer = buffer.clone();
-                }
-                // コマンドDBの取得
-                self.get_executable_commands();
-                self.get_directory_contents("./");
-
-                // 予測されるコマンドを取得
-                if let Ok(autocomplete) =
-                    self.rsh_char_search(stack_buffer.clone(), &mut tab_counter)
-                {
-                    buffer = autocomplete;
-                }
-
-                pushed_tab = true;
-
-                self.set_prompt_color("#9ea1a3".to_string()).unwrap();
-                if print_buf.len() < buffer.len() {
-                    execute!(
-                        stdout,
-                        // 予想される文字
-                        Print(buffer[print_buf.len()..].to_string()),
-                        // カーソルをbufferまで移動
-                        MoveLeft(buffer[print_buf.len()..].to_string().len() as u16)
-                    )
-                    .unwrap();
-                }
-                std::io::stdout().flush().unwrap();
-            } else {
-                // 予測変換がない場合
+                self.set_prompt_color("#a4a4a4".to_string()).unwrap();
                 execute!(
                     stdout,
-                    //SetForegroundColor(Color::Red),
-                    SetForegroundColor(Color::White),
+                    // 予想される文字
+                    Print(print_buf_suffix.to_string()),
                 )
                 .unwrap();
                 std::io::stdout().flush().unwrap();
@@ -391,6 +422,7 @@ impl Rsh {
                 }
                 quote_flag = !quote_flag;
             } else if c == ' ' && quote_flag != true {
+                // Bufferが空の場合はスペースを挿入する
                 r_vec.push(buffer.clone());
                 buffer.clear();
             } else {
@@ -426,7 +458,6 @@ impl Rsh {
     }
 
     fn rsh_launch(&mut self, args: Vec<String>) -> Result<Status, RshError> {
-
         let pid = fork().map_err(|_| RshError::new("fork failed"))?;
         let (pipe_read, pipe_write) = pipe().unwrap();
 
@@ -505,11 +536,11 @@ impl Rsh {
 
     fn rsh_execute(&mut self, args: Vec<String>) -> Result<Status, RshError> {
         if let Option::Some(arg) = args.get(0) {
-        let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        let path = self.open_profile(".rsh_history")?;
+            let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+            let path = self.open_profile(".rsh_history")?;
 
-        csv_writer(args.join(" "), time, &path)
-            .map_err(|_| RshError::new("Failed to write history"))?;
+            csv_writer(args.join(" "), time, &path)
+                .map_err(|_| RshError::new("Failed to write history"))?;
             return match arg.as_str() {
                 // cd: ディレクトリ移動の組み込みコマンド
                 "cd" =>
@@ -547,10 +578,10 @@ impl Rsh {
 
         self.ignore_tty_signals();
 
+        // 百入茶 ももしおちゃ
         execute!(stdout, Print("\n"),)
             .map_err(|_| RshError::new("Failed to print directory"))
             .unwrap();
-
         std::io::stdout().flush().unwrap();
 
         // 絶対値なので相対移動になるようになんとかする
@@ -561,8 +592,13 @@ impl Rsh {
             let args = self.rsh_split_line(line);
 
             self.get_executable_commands();
-            self.get_rshhistory_contents()?;
-            self.get_rshenv_contents()?;
+            if let Err(err) = self.get_rshhistory_contents() {
+                self.eprintln(&format!("Error: {}", err.message));
+            }
+            if let Err(err) = self.get_rshenv_contents() {
+                //self.eprintln(&format!("Error: {}", err.message));
+                self.exists_rshenv = false;
+            }
 
             match self.rsh_execute(args) {
                 Ok(status) => match status {
@@ -581,6 +617,7 @@ impl Rsh {
             history_database: Vec::new(),
             command_database: Vec::new(),
             return_code: 0,
+            exists_rshenv: false,
         }
     }
 }
@@ -588,5 +625,4 @@ impl Rsh {
 fn main() {
     let mut rsh = Rsh::new();
     let code = rsh.rsh_loop();
-    println!("rsh: {:?}", code);
 }
