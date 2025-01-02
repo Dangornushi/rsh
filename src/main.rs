@@ -365,6 +365,8 @@ impl Rsh {
 
             let _ = self.set_prompt();
 
+            //クォートを一つ打ち込んでから二回目に打ち込むまで文字列表示が失われる
+            // 矢印かN/I/V導入してコピペ作る
             let space_counter = buffer.chars().filter(|&c| c == ' ').count();
             let print_buf_parts: Vec<String> = self.rsh_split_line(buffer.clone()); //print_buf.split_whitespace().collect();
 
@@ -411,19 +413,25 @@ impl Rsh {
         let mut in_quote_buffer = String::new();
         let mut buffer = String::new();
         let mut r_vec = Vec::new();
+        let mut quote_start_index = 0;
 
         for c in line.chars() {
             if c == '"' {
                 match quote_flag {
                     true => {
-                        //閉じるクォート
-                        buffer.push_str(&in_quote_buffer);
+                        //クォートに囲まれた文字列を挿入
+                        buffer.replace_range(quote_start_index.., &in_quote_buffer);
+
+                        //閉じるクォートを挿入
                         buffer.push('"');
                         in_quote_buffer.clear();
+                        quote_start_index = 0;
                     }
                     false => {
                         //始めるクォート
                         buffer.push('"');
+                        // クォートが閉じられた際に挿入される部分を記録
+                        quote_start_index = buffer.len();
                     }
                 }
                 quote_flag = !quote_flag;
@@ -432,11 +440,10 @@ impl Rsh {
                 r_vec.push(buffer.clone());
                 buffer.clear();
             } else {
+                buffer.push(c);
                 match quote_flag {
                     true => in_quote_buffer.push(c),
-                    false => {
-                        buffer.push(c);
-                    }
+                    false => {}
                 }
             }
         }
