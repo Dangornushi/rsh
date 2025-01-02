@@ -258,7 +258,7 @@ impl Rsh {
         let mut pushed_tab = false;
         let mut stack_buffer = String::new();
         let mut tab_counter = 0;
-        let mut space_counter = 0;
+        //let mut space_counter = 0;
         enable_raw_mode().unwrap();
 
         let _ = self.set_prompt();
@@ -300,7 +300,7 @@ impl Rsh {
                         // TABの直後にSpaceが入力された場合
                         buffer = format!("{} ", buffer);
                         pushed_tab = false;
-                        space_counter += 1;
+                        //space_counter += 1;
                     }
                     _ => {
                         // TABの直後に文字が入力された場合
@@ -314,7 +314,7 @@ impl Rsh {
                             KeyCode::Backspace => {
                                 if let Some(last_char) = buffer.chars().last() {
                                     if last_char == ' ' {
-                                        space_counter -= 1;
+                                        //space_counter -= 1;
                                     }
                                 }
                                 buffer.pop();
@@ -364,10 +364,11 @@ impl Rsh {
             }
 
             let _ = self.set_prompt();
+
+            let space_counter = buffer.chars().filter(|&c| c == ' ').count();
             let print_buf_parts: Vec<String> = self.rsh_split_line(buffer.clone()); //print_buf.split_whitespace().collect();
 
             let mut tmp = 0;
-
             // 瓶覗 かめのぞき
             // コマンドの色
             self.set_prompt_color("#a2d7dd".to_string()).unwrap();
@@ -382,15 +383,20 @@ impl Rsh {
             }
             if filtered_commands.len() > 0 {
                 // 部分的に一致しているコマンドの先頭の要素からbufferから先を取得
-                let print_buf_suffix = filtered_commands[0][buffer.len()..].to_string();
+                let print_buf_suffix =
+                    self.rsh_split_line(filtered_commands[0][buffer.len()..].to_string());
 
                 self.set_prompt_color("#a4a4a4".to_string()).unwrap();
-                execute!(
-                    stdout,
-                    // 予想される文字
-                    Print(print_buf_suffix.to_string()),
-                )
-                .unwrap();
+
+                for i in &print_buf_suffix {
+                    execute!(stdout, Print(i)).unwrap();
+                    if tmp < space_counter {
+                        tmp += 1;
+                        execute!(stdout, Print(" ")).unwrap();
+                        // コマンド引数の色
+                        self.set_prompt_color("#ececec".to_string()).unwrap();
+                    }
+                }
                 std::io::stdout().flush().unwrap();
             }
         }
