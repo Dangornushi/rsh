@@ -34,13 +34,23 @@ use std::fs;
 use std::io::{stdout, Write};
 use whoami::username;
 
+#[derive(PartialEq)]
+enum Mode {
+    Nomal,
+    Visual,
+    Input,
+}
+
+#[derive()]
 struct Rsh {
     prompt: String,
+    buffer: String,
     env_database: Vec<String>,
     history_database: Vec<History>,
     command_database: Vec<String>,
     return_code: i32,
     exists_rshenv: bool,
+    now_mode: Mode,
 }
 
 impl Rsh {
@@ -207,6 +217,15 @@ impl Rsh {
         Ok(())
     }
 
+    fn get_mode_string(&self) -> &str {
+        match self.now_mode {
+            Mode::Nomal => "Nomal",
+            Mode::Input => "Input",
+            Mode::Visual => "Visual",
+            _ => "Else",
+        }
+    }
+
     fn set_prompt(&mut self) -> Result<(), RshError> {
         let mut stdout = stdout();
         // ui ----------------------------------------------------
@@ -237,12 +256,15 @@ impl Rsh {
                 .map_err(|_| RshError::new("Failed to print directory"))?;
         }
 
-        // 桔梗 ききょう
-        self.set_prompt_color("#f8f8f8".to_string());
+        self.set_prompt_color("#f8f8f8".to_string())?;
         execute!(stdout, Print(" [".to_string())).unwrap();
-        self.set_prompt_color("#68be8d".to_string());
+        self.set_prompt_color("#68be8d".to_string())?;
         execute!(stdout, Print(self.return_code)).unwrap();
-        self.set_prompt_color("#fafafa".to_string());
+        self.set_prompt_color("#fafafa".to_string())?;
+        execute!(stdout, Print(": ".to_string())).unwrap();
+        self.set_prompt_color("#68be8d".to_string())?;
+        execute!(stdout, Print(self.get_mode_string())).unwrap();
+        self.set_prompt_color("#fafafa".to_string())?;
         execute!(stdout, Print("]".to_string())).unwrap();
         // 若竹色 わかたけいろ
         execute!(stdout, Print(" > ")).unwrap();
@@ -253,159 +275,7 @@ impl Rsh {
     }
 
     fn rsh_read_line(&mut self) -> String {
-        let mut buffer = String::new();
-        let mut stdout = stdout();
-        let mut pushed_tab = false;
-        let mut stack_buffer = String::new();
-        let mut tab_counter = 0;
-        //let mut space_counter = 0;
-        enable_raw_mode().unwrap();
-
-        let _ = self.set_prompt();
-        loop {
-            self.get_directory_contents("./");
-
-            // キー入力の取得
-            if let Event::Key(KeyEvent {
-                code,
-                modifiers: _,
-                kind: _,
-                state: _,
-            }) = read().unwrap()
-            {
-                match code {
-                    KeyCode::Tab => {
-                        if !pushed_tab {
-                            // 現時点で入力されている文字のバックアップ
-                            stack_buffer = buffer.clone();
-                        }
-                        // コマンドDBの取得
-                        self.get_executable_commands();
-                        self.get_directory_contents("./");
-                        self.get_rshhistory_contents().unwrap();
-
-                        // 予測されるコマンドを取得
-                        if let Ok(autocomplete) =
-                            self.rsh_char_search(stack_buffer.clone(), &mut tab_counter)
-                        {
-                            buffer = autocomplete;
-                        }
-
-                        pushed_tab = true;
-                        tab_counter += 1;
-                    }
-                    KeyCode::Enter => break,
-
-                    KeyCode::Char(' ') => {
-                        // TABの直後にSpaceが入力された場合
-                        buffer = format!("{} ", buffer);
-                        pushed_tab = false;
-                        //space_counter += 1;
-                    }
-                    _ => {
-                        // TABの直後に文字が入力された場合
-                        if pushed_tab {
-                            // 予測変換をキャンセルさせる
-                            buffer = stack_buffer.clone();
-                            pushed_tab = false;
-                            tab_counter = 0;
-                        }
-                        buffer = match code {
-                            KeyCode::Backspace => {
-                                if let Some(last_char) = buffer.chars().last() {
-                                    if last_char == ' ' {
-                                        //space_counter -= 1;
-                                    }
-                                }
-                                buffer.pop();
-                                buffer.clone()
-                            }
-                            KeyCode::Char(' ') => {
-                                format!("{} ", buffer)
-                            }
-                            KeyCode::Char(c) => format!("{}{}", buffer, c),
-                            _ => buffer,
-                        };
-                    }
-                }
-            }
-
-            // キー入力がない場合
-
-            let history_matches: Vec<String> = self
-                .history_database
-                .iter()
-                .filter(|history| history.get_command().starts_with(&buffer))
-                .map(|history| history.get_command().to_string())
-                .collect();
-
-            // command_databaseの中からbufferで始まるものを取得
-            let matches = self
-                .command_database
-                .iter()
-                .filter(|command| command.starts_with(&buffer));
-
-            // 上記を配列に変換
-            let mut filtered_commands: Vec<String> =
-                history_matches.into_iter().map(|s| s.to_string()).collect();
-            filtered_commands.extend(matches.map(|s| s.to_string()));
-
-            // もしもコマンドが見つからなかった場合
-            if filtered_commands.len() == 0 {
-                for env_path in self.env_database.clone() {
-                    // command_databaseの中からenv_path/bufferで始まるものを取得
-                    let matches = self.command_database.iter().filter(|command| {
-                        let command_path = format!("{}/{}", env_path, buffer);
-                        command.starts_with(&buffer) || command_path.starts_with(&buffer)
-                    });
-                    // 上記を配列に変換
-                    filtered_commands = matches.map(|s| s.to_string()).collect();
-                }
-            }
-
-            let _ = self.set_prompt();
-
-            //クォートを一つ打ち込んでから二回目に打ち込むまで文字列表示が失われる
-            // 矢印かN/I/V導入してコピペ作る
-            let space_counter = buffer.chars().filter(|&c| c == ' ').count();
-            let print_buf_parts: Vec<String> = self.rsh_split_line(buffer.clone()); //print_buf.split_whitespace().collect();
-
-            let mut tmp = 0;
-            // 瓶覗 かめのぞき
-            // コマンドの色
-            self.set_prompt_color("#a2d7dd".to_string()).unwrap();
-            for i in &print_buf_parts {
-                execute!(stdout, Print(i)).unwrap();
-                if tmp < space_counter {
-                    tmp += 1;
-                    execute!(stdout, Print(" ")).unwrap();
-                    // コマンド引数の色
-                    self.set_prompt_color("#ececec".to_string()).unwrap();
-                }
-            }
-            if filtered_commands.len() > 0 {
-                // 部分的に一致しているコマンドの先頭の要素からbufferから先を取得
-                let print_buf_suffix =
-                    self.rsh_split_line(filtered_commands[0][buffer.len()..].to_string());
-
-                self.set_prompt_color("#a4a4a4".to_string()).unwrap();
-
-                for i in &print_buf_suffix {
-                    execute!(stdout, Print(i)).unwrap();
-                    if tmp < space_counter {
-                        tmp += 1;
-                        execute!(stdout, Print(" ")).unwrap();
-                        // コマンド引数の色
-                        self.set_prompt_color("#ececec".to_string()).unwrap();
-                    }
-                }
-                std::io::stdout().flush().unwrap();
-            }
-        }
-        disable_raw_mode().unwrap();
-        execute!(stdout, Print("\n")).unwrap();
-        std::io::stdout().flush().unwrap();
-        return buffer;
+        return self.buffer.clone();
     }
 
     fn rsh_split_line(&self, line: String) -> Vec<String> {
@@ -586,6 +456,25 @@ impl Rsh {
         Ok(Status::Success)
     }
 
+    pub fn rsh_print(&self, buffer: String) {
+        let space_counter = buffer.chars().filter(|&c| c == ' ').count();
+        let print_buf_parts: Vec<String> = self.rsh_split_line(buffer.clone()); //print_buf.split_whitespace().collect();
+
+        let mut tmp = 0;
+        // 瓶覗 かめのぞき
+        // コマンドの色
+        self.set_prompt_color("#a2d7dd".to_string()).unwrap();
+        for i in &print_buf_parts {
+            execute!(stdout(), Print(i)).unwrap();
+            if tmp < space_counter {
+                tmp += 1;
+                execute!(stdout(), Print(" ")).unwrap();
+                // コマンド引数の色
+                self.set_prompt_color("#ececec".to_string()).unwrap();
+            }
+        }
+    }
+
     pub fn rsh_loop(&mut self) -> Result<Status, RshError> {
         let mut stdout = stdout();
 
@@ -601,36 +490,245 @@ impl Rsh {
         let _ = execute!(stdout, MoveTo(0, 0), Clear(ClearType::All));
 
         loop {
-            let line = self.rsh_read_line();
-            let args = self.rsh_split_line(line);
+            enable_raw_mode().unwrap();
 
-            self.get_executable_commands();
-            if let Err(err) = self.get_rshhistory_contents() {
-                self.eprintln(&format!("Error: {}", err.message));
-            }
-            if let Err(err) = self.get_rshenv_contents() {
-                //self.eprintln(&format!("Error: {}", err.message));
-                self.exists_rshenv = false;
-            }
+            let _ = self.set_prompt();
 
-            match self.rsh_execute(args) {
-                Ok(status) => match status {
-                    Status::Success => continue,
-                    exit @ Status::Exit => return Ok(exit),
-                },
-                err @ Err(_) => return err,
-            };
+            self.rsh_print(self.buffer.clone());
+
+            match self.now_mode {
+                Mode::Nomal => {
+                    loop {
+                        // キー入力の取得
+                        if let Event::Key(KeyEvent {
+                            code,
+                            modifiers: _,
+                            kind: _,
+                            state: _,
+                        }) = read().unwrap()
+                        {
+                            match code {
+                                KeyCode::Char('i') => {
+                                    self.now_mode = Mode::Input;
+                                    break;
+                                }
+                                KeyCode::Char('v') => {
+                                    //self.now_mode = Mode::Visual;
+                                    //break;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                Mode::Input => {
+                    // 入力を取得
+
+                    let mut pushed_tab = false;
+                    let mut stack_buffer = String::new();
+                    let mut tab_counter = 0;
+
+                    enable_raw_mode().unwrap();
+
+                    loop {
+                        self.get_directory_contents("./");
+
+                        // キー入力の取得
+                        if let Event::Key(KeyEvent {
+                            code,
+                            modifiers: _,
+                            kind: _,
+                            state: _,
+                        }) = read().unwrap()
+                        {
+                            match code {
+                                KeyCode::Esc => {
+                                    self.now_mode = Mode::Nomal;
+                                    break;
+                                }
+                                KeyCode::Tab => {
+                                    if !pushed_tab {
+                                        // 現時点で入力されている文字のバックアップ
+                                        stack_buffer = self.buffer.clone();
+                                    }
+                                    // コマンドDBの取得
+                                    self.get_executable_commands();
+                                    self.get_directory_contents("./");
+                                    self.get_rshhistory_contents().unwrap();
+
+                                    // 予測されるコマンドを取得
+                                    if let Ok(autocomplete) =
+                                        self.rsh_char_search(stack_buffer.clone(), &mut tab_counter)
+                                    {
+                                        self.buffer = autocomplete;
+                                    }
+
+                                    pushed_tab = true;
+                                    tab_counter += 1;
+                                }
+                                KeyCode::Enter => break,
+                                KeyCode::Char(' ') => {
+                                    // TABの直後にSpaceが入力された場合
+                                    self.buffer = format!("{} ", self.buffer);
+                                    pushed_tab = false;
+                                    //space_counter += 1;
+                                }
+                                _ => {
+                                    // TABの直後に文字が入力された場合
+                                    if pushed_tab {
+                                        // 予測変換をキャンセルさせる
+                                        self.buffer = stack_buffer.clone();
+                                        pushed_tab = false;
+                                        tab_counter = 0;
+                                    }
+                                    self.buffer = match code {
+                                        KeyCode::Backspace => {
+                                            if let Some(last_char) = self.buffer.chars().last() {
+                                                if last_char == ' ' {
+                                                    //space_counter -= 1;
+                                                }
+                                            }
+                                            self.buffer.pop();
+                                            self.buffer.clone()
+                                        }
+                                        KeyCode::Char(' ') => {
+                                            format!("{} ", self.buffer)
+                                        }
+                                        KeyCode::Char(c) => format!("{}{}", self.buffer, c),
+                                        _ => self.buffer.clone(),
+                                    };
+                                }
+                            }
+                        }
+
+                        // コマンド実行履歴の中からbufferで始まるものを取得
+                        let history_matches: Vec<String> = self
+                            .history_database
+                            .iter()
+                            .filter(|history| history.get_command().starts_with(&self.buffer))
+                            .map(|history| history.get_command().to_string())
+                            .collect();
+
+                        // 利用可能なコマンドの中からbufferで始まるものを取得
+                        let matches = self
+                            .command_database
+                            .iter()
+                            .filter(|command| command.starts_with(&self.buffer));
+
+                        // 上記を配列に変換
+                        let mut filtered_commands: Vec<String> =
+                            history_matches.into_iter().map(|s| s.to_string()).collect();
+                        filtered_commands.extend(matches.map(|s| s.to_string()));
+
+                        // もしもコマンドが見つからなかった場合、環境変数を利用して参照しなおす
+                        if filtered_commands.len() == 0 {
+                            for env_path in self.env_database.clone() {
+                                // command_databaseの中からenv_path/bufferで始まるものを取得
+                                let matches = self.command_database.iter().filter(|command| {
+                                    let command_path = format!("{}/{}", env_path, self.buffer);
+                                    command.starts_with(&self.buffer)
+                                        || command_path.starts_with(&self.buffer)
+                                });
+                                // 上記を配列に変換
+                                filtered_commands = matches.map(|s| s.to_string()).collect();
+                            }
+                        }
+
+                        let _ = self.set_prompt();
+
+                        //クォートを一つ打ち込んでから二回目に打ち込むまで文字列表示が失われる
+                        // 矢印かN/I/V導入してコピペ作る
+                        let space_counter = self.buffer.chars().filter(|&c| c == ' ').count();
+                        let print_buf_parts: Vec<String> = self.rsh_split_line(self.buffer.clone()); //print_buf.split_whitespace().collect();
+
+                        let mut tmp = 0;
+                        // 瓶覗 かめのぞき
+                        // コマンドの色
+                        self.set_prompt_color("#a2d7dd".to_string()).unwrap();
+                        for i in &print_buf_parts {
+                            execute!(stdout, Print(i)).unwrap();
+                            if tmp < space_counter {
+                                tmp += 1;
+                                execute!(stdout, Print(" ")).unwrap();
+                                // コマンド引数の色
+                                self.set_prompt_color("#ececec".to_string()).unwrap();
+                            }
+                        }
+
+                        // 補完されるコマンドがある場合描写する
+                        if filtered_commands.len() > 0 {
+                            // 部分的に一致しているコマンドの先頭の要素からbufferから先を取得
+                            let print_buf_suffix = self.rsh_split_line(
+                                filtered_commands[0][self.buffer.len()..].to_string(),
+                            );
+
+                            // コマンド表示の色
+                            self.set_prompt_color("#a4a4a4".to_string()).unwrap();
+
+                            // コマンド・コマンド引数ともに表示
+                            for i in &print_buf_suffix {
+                                execute!(stdout, Print(i)).unwrap();
+                                if tmp < space_counter {
+                                    // コマンド同士の間の空白を描写
+                                    tmp += 1;
+                                    execute!(stdout, Print(" ")).unwrap();
+                                    // コマンド引数の色
+                                    self.set_prompt_color("#ececec".to_string()).unwrap();
+                                }
+                            }
+                        }
+                    }
+
+                    disable_raw_mode().unwrap();
+
+                    execute!(stdout, MoveToColumn(0), Print("\n")).unwrap();
+                    std::io::stdout().flush().unwrap();
+
+                    if self.now_mode != Mode::Input {
+                        continue;
+                    }
+
+                    // 入力を実行可能な形式に分割
+                    let args = self.rsh_split_line(self.buffer.clone());
+
+                    // 実行可能なコマンド一覧を取得
+                    self.get_executable_commands();
+
+                    // 履歴ファイルが存在するか？
+                    if let Err(err) = self.get_rshhistory_contents() {
+                        self.eprintln(&format!("Error: {}", err.message));
+                    }
+                    // 環境変数ファイルが存在するか？
+                    if let Err(_) = self.get_rshenv_contents() {
+                        //self.eprintln(&format!("Error: {}", err.message));
+                        self.exists_rshenv = false;
+                    }
+
+                    self.buffer = String::new();
+                    // 分割したコマンドを実行
+                    match self.rsh_execute(args) {
+                        Ok(status) => match status {
+                            Status::Success => continue,
+                            exit @ Status::Exit => return Ok(exit),
+                        },
+                        err @ Err(_) => return err,
+                    };
+                }
+                _ => {}
+            }
         }
     }
 
     pub fn new() -> Self {
         Self {
             prompt: String::new(),
+            buffer: String::new(),
             env_database: Vec::new(),
             history_database: Vec::new(),
             command_database: Vec::new(),
             return_code: 0,
             exists_rshenv: false,
+            now_mode: Mode::Nomal,
         }
     }
 }
