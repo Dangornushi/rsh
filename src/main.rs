@@ -518,23 +518,6 @@ impl Rsh {
         }
     }
 
-    /*
-    pub fn match_input(&mut self, stdout: &mut std::io::Stdout, code: KeyCode) -> bool {
-        match code {
-            KeyCode::Esc => {
-                self.set_mode(Mode::Nomal);
-                return true;
-            }
-            KeyCode::Char('h') => {
-                if self.cursor_x < self.buffer.len() {
-                    execute!(stdout, MoveLeft(1)).unwrap();
-                    self.cursor_x += 1;
-                }
-            }
-            _ => {}
-        }
-        false
-    }*/
     pub fn rsh_move_cursor(&mut self) {
         let mut stdout = stdout();
 
@@ -559,7 +542,6 @@ impl Rsh {
                         // Bufferの文字列内でカーソルを移動させるため
                         if self.cursor_x > 0 {
                             execute!(stdout, MoveLeft(1)).unwrap();
-                            std::io::stdout().flush().unwrap();
                             self.cursor_x -= 1;
                         }
                     }
@@ -568,7 +550,6 @@ impl Rsh {
                         // Bufferの文字列内でカーソルを移動させるため
                         if self.cursor_x < self.buffer.len() {
                             execute!(stdout, MoveRight(1)).unwrap();
-                            std::io::stdout().flush().unwrap();
                             self.cursor_x += 1;
                         }
                     }
@@ -586,6 +567,7 @@ impl Rsh {
                         //}
                     }
                 }
+                std::io::stdout().flush().unwrap();
             }
         }
         disable_raw_mode().unwrap();
@@ -694,10 +676,12 @@ impl Rsh {
                                                 // 要素を削除
                                                 // アルファベットではない
                                                 let mut char_indices = self.buffer.char_indices();
-                                                if let Some((idx, _)) =
-                                                    char_indices.nth(self.cursor_x - 1)
-                                                {
-                                                    self.buffer.remove(idx);
+                                                if self.cursor_x > 0 {
+                                                    if let Some((idx, _)) =
+                                                        char_indices.nth(self.cursor_x - 1)
+                                                    {
+                                                        self.buffer.remove(idx);
+                                                    }
                                                 }
                                                 self.cursor_x -= 1;
                                             }
@@ -709,16 +693,6 @@ impl Rsh {
                                             self.buffer.clone()
                                         }
                                         KeyCode::Char(c) => {
-                                            /*
-                                            if self.cursor_x < self.buffer.len() {
-                                                let mut char_indices = self.buffer.char_indices();
-                                                if let Some((idx, s)) =
-                                                    char_indices.nth(self.cursor_x)
-                                                {
-                                                    self.buffer.insert(idx, c);
-                                                }
-                                            } else {
-                                            }*/
                                             self.buffer.push(c);
                                             self.cursor_x += 1;
                                             self.buffer.clone()
@@ -790,13 +764,18 @@ impl Rsh {
                             // コマンド補完表示の色
                             self.set_prompt_color("#938274".to_string()).unwrap();
 
+                            let mut print_length = 0;
                             // コマンド・コマンド引数ともに表示
                             for (i, part) in print_buf_suffix.iter().enumerate() {
                                 execute!(stdout, Print(part)).unwrap();
+                                print_length += part.len();
                                 if i < print_buf_suffix.len() - 1 {
                                     execute!(stdout, Print(" ")).unwrap();
+                                    print_length += 1;
                                 }
                             }
+
+                            execute!(stdout, MoveLeft(print_length as u16)).unwrap();
                         }
                     }
 
