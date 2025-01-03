@@ -712,7 +712,7 @@ impl Rsh {
                                             if self.cursor_x < self.buffer.len() {
                                                 let mut char_indices = self.buffer.char_indices();
                                                 if let Some((idx, _)) =
-                                                    char_indices.nth(self.cursor_x - 1)
+                                                    char_indices.nth(self.cursor_x)
                                                 {
                                                     self.buffer.insert(idx, c);
                                                 }
