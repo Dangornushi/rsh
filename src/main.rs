@@ -709,16 +709,17 @@ impl Rsh {
                                             self.buffer.clone()
                                         }
                                         KeyCode::Char(c) => {
+                                            /*
                                             if self.cursor_x < self.buffer.len() {
                                                 let mut char_indices = self.buffer.char_indices();
-                                                if let Some((idx, _)) =
+                                                if let Some((idx, s)) =
                                                     char_indices.nth(self.cursor_x)
                                                 {
                                                     self.buffer.insert(idx, c);
                                                 }
                                             } else {
-                                                self.buffer.push(c);
-                                            }
+                                            }*/
+                                            self.buffer.push(c);
                                             self.cursor_x += 1;
                                             self.buffer.clone()
                                         }
@@ -770,7 +771,9 @@ impl Rsh {
                         self.set_prompt_color("#457E7D".to_string()).unwrap();
                         // コマンド・コマンド引数ともに表示
                         for (i, part) in print_buf_parts.iter().enumerate() {
+                            // 一つのコマンド
                             execute!(stdout, Print(part)).unwrap();
+
                             if i < print_buf_parts.len() - 1 {
                                 execute!(stdout, Print(" ")).unwrap();
                                 self.set_prompt_color("#AC6383".to_string()).unwrap();
