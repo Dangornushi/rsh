@@ -688,23 +688,18 @@ impl Rsh {
                                     }
                                     self.buffer = match code {
                                         KeyCode::Backspace => {
-                                            if self.cursor_x <= self.buffer.len() {
+                                            if self.cursor_x <= self.buffer.len()
+                                                && self.cursor_x > 0
+                                            {
                                                 // 要素を削除
-                                                if self
-                                                    .buffer
-                                                    .chars()
-                                                    .nth(self.cursor_x - 1)
-                                                    .map_or(false, |c| c.is_ascii_alphabetic())
+                                                // アルファベットではない
+                                                let mut char_indices = self.buffer.char_indices();
+                                                if let Some((idx, _)) =
+                                                    char_indices.nth(self.cursor_x - 1)
                                                 {
-                                                    // アルファベットである
-                                                    self.buffer.remove(self.cursor_x - 1);
-                                                    self.cursor_x -= 1;
-                                                } else {
-                                                    // アルファベットではない
-                                                    println!("err");
-                                                    std::io::stdout().flush().unwrap();
-                                                    continue;
+                                                    self.buffer.remove(idx);
                                                 }
+                                                self.cursor_x -= 1;
                                             }
                                             self.buffer.clone()
                                         }
@@ -714,20 +709,18 @@ impl Rsh {
                                             self.buffer.clone()
                                         }
                                         KeyCode::Char(c) => {
-                                            if c.is_ascii() {
-                                                if self.cursor_x < self.buffer.len() {
-                                                    self.buffer.insert(self.cursor_x, c);
-                                                } else {
-                                                    self.buffer.push(c);
+                                            if self.cursor_x < self.buffer.len() {
+                                                let mut char_indices = self.buffer.char_indices();
+                                                if let Some((idx, _)) =
+                                                    char_indices.nth(self.cursor_x - 1)
+                                                {
+                                                    self.buffer.insert(idx, c);
                                                 }
-                                                self.cursor_x += 1;
-                                                self.buffer.clone()
                                             } else {
-                                                // アルファベットではない
-                                                println!("err");
-                                                std::io::stdout().flush().unwrap();
-                                                continue;
+                                                self.buffer.push(c);
                                             }
+                                            self.cursor_x += 1;
+                                            self.buffer.clone()
                                         }
                                         _ => self.buffer.clone(),
                                     };
