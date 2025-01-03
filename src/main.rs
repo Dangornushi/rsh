@@ -6,6 +6,7 @@ use crate::log::log_maneger::csv_reader;
 use crate::log::log_maneger::csv_writer;
 use crate::log::log_maneger::History;
 use colored::Colorize;
+use crossterm::cursor::MoveRight;
 use crossterm::cursor::MoveTo;
 use crossterm::event::read;
 use crossterm::event::KeyEvent;
@@ -34,7 +35,51 @@ use std::fs;
 use std::io::{stdout, Write};
 use whoami::username;
 
-#[derive(PartialEq)]
+struct Prompt {
+    username: String,
+    pwd: String,
+    utils: String,
+}
+
+impl Prompt {
+    pub fn new(username: String, pwd: Vec<String>, return_code: i32, mode: Mode) -> Self {
+        let mode_str = match mode {
+            Mode::Nomal => "Nomal",
+            Mode::Input => "Input",
+            Mode::Visual => "Visual",
+            _ => "Else",
+        };
+
+        Self {
+            username: format!("{} ", username),
+            pwd: {
+                let mut full_path = String::new();
+                for dir in pwd {
+                    full_path = format!("{}{}/", dir, full_path);
+                }
+
+                full_path
+            },
+            utils: format!(" [{}: {}] > ", return_code, mode_str),
+        }
+    }
+
+    pub fn get_username(&self) -> String {
+        self.username.clone()
+    }
+    pub fn get_pwd(&self) -> String {
+        self.pwd.clone()
+    }
+    pub fn get_utils(&self) -> String {
+        self.utils.clone()
+    }
+
+    pub fn len(&self) -> usize {
+        self.username.len() + self.pwd.len() + self.utils.len()
+    }
+}
+
+#[derive(PartialEq, Clone, Copy)]
 enum Mode {
     Nomal,
     Visual,
@@ -51,6 +96,7 @@ struct Rsh {
     return_code: i32,
     exists_rshenv: bool,
     now_mode: Mode,
+    cursor_x: usize,
 }
 
 impl Rsh {
@@ -69,18 +115,7 @@ impl Rsh {
 
     fn eprintln(&self, message: &str) {
         let mut stderr = std::io::stderr();
-        std::io::stdout().flush().unwrap();
         execute!(stderr, Print(message), Print("\n"))
-            .map_err(|_| RshError::new("Failed to print error message"))
-            .unwrap();
-
-        std::io::stdout().flush().unwrap();
-    }
-
-    fn println(&self, message: &str) {
-        let mut stdout = std::io::stdout();
-        std::io::stdout().flush().unwrap();
-        execute!(stdout, Print(message), Print("\n"))
             .map_err(|_| RshError::new("Failed to print error message"))
             .unwrap();
 
@@ -164,40 +199,6 @@ impl Rsh {
         now_dir
     }
 
-    fn rsh_char_search(
-        &self,
-        search_string: String,
-        counter: &mut usize,
-    ) -> Result<String, RshError> {
-        let matches = self
-            .command_database
-            .iter()
-            .filter(|command| command.starts_with(&search_string));
-
-        let history_matches: Vec<String> = self
-            .history_database
-            .iter()
-            .filter(|history| history.get_command().starts_with(&search_string))
-            .map(|history| history.get_command().to_string())
-            .collect();
-
-        let mut filtered_commands: Vec<String> =
-            history_matches.into_iter().map(|s| s.to_string()).collect();
-        filtered_commands.extend(matches.map(|s| s.to_string()));
-
-        match filtered_commands.len() {
-            0 => {
-                return Err(RshError::new("No command found"));
-            }
-            _ => {
-                if filtered_commands.clone().len() <= *counter {
-                    *counter -= 1;
-                }
-                Ok(filtered_commands[*counter].clone())
-            }
-        }
-    }
-
     fn set_prompt_color(&self, color_code: String) -> Result<(), RshError> {
         if color_code.len() != 7 || !color_code.starts_with('#') {
             return Err(RshError::new("Invalid color code"));
@@ -231,12 +232,12 @@ impl Rsh {
         // ui ----------------------------------------------------
         // Set the prompt color
         if self.exists_rshenv {
+            // Theme
             // 環境変数設定ファイルが存在する
-            // 天色
-            self.set_prompt_color("#2ca9e1".to_string())?;
+            self.set_prompt_color("#AC6683".to_string())?;
         } else {
-            // 紅緋
-            self.set_prompt_color("#e83929".to_string())?;
+            // Theme
+            self.set_prompt_color("#A61602".to_string())?;
         }
         execute!(
             stdout,
@@ -247,6 +248,7 @@ impl Rsh {
         )
         .map_err(|_| RshError::new("Failed to print directory"))?;
 
+        // Theme
         self.set_prompt_color("#d1d1d1".to_string())?;
 
         // Display the current directory in the prompt
@@ -256,26 +258,85 @@ impl Rsh {
                 .map_err(|_| RshError::new("Failed to print directory"))?;
         }
 
+        // Theme
         self.set_prompt_color("#f8f8f8".to_string())?;
         execute!(stdout, Print(" [".to_string())).unwrap();
-        self.set_prompt_color("#68be8d".to_string())?;
+        self.set_prompt_color("#589F62".to_string())?;
         execute!(stdout, Print(self.return_code)).unwrap();
         self.set_prompt_color("#fafafa".to_string())?;
         execute!(stdout, Print(": ".to_string())).unwrap();
-        self.set_prompt_color("#68be8d".to_string())?;
+
+        match self.now_mode {
+            // Theme
+            Mode::Input => self.set_prompt_color("#218587".to_string())?,
+            Mode::Nomal => self.set_prompt_color("#589F62".to_string())?,
+            Mode::Visual => self.set_prompt_color("#E9B42C".to_string())?,
+        }
         execute!(stdout, Print(self.get_mode_string())).unwrap();
+
+        // Theme
         self.set_prompt_color("#fafafa".to_string())?;
-        execute!(stdout, Print("]".to_string())).unwrap();
-        // 若竹色 わかたけいろ
-        execute!(stdout, Print(" > ")).unwrap();
+        execute!(stdout, Print("] > ")).unwrap();
 
         std::io::stdout().flush().unwrap();
         // --------------------------------------------------------
         Ok(())
     }
 
-    fn rsh_read_line(&mut self) -> String {
-        return self.buffer.clone();
+    fn set_mode(&mut self, mode: Mode) {
+        self.now_mode = mode;
+    }
+
+    fn ignore_tty_signals(&self) {
+        let sa = SigAction::new(SigHandler::SigIgn, SaFlags::empty(), SigSet::empty());
+        unsafe {
+            sigaction(Signal::SIGTSTP, &sa).unwrap();
+            sigaction(Signal::SIGTTIN, &sa).unwrap();
+            sigaction(Signal::SIGTTOU, &sa).unwrap();
+        }
+    }
+
+    fn restore_tty_signals(&self) {
+        let sa = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
+        unsafe {
+            sigaction(Signal::SIGTSTP, &sa).unwrap();
+            sigaction(Signal::SIGTTIN, &sa).unwrap();
+            sigaction(Signal::SIGTTOU, &sa).unwrap();
+        }
+    }
+
+    fn rsh_char_search(
+        &self,
+        search_string: String,
+        counter: &mut usize,
+    ) -> Result<String, RshError> {
+        let matches = self
+            .command_database
+            .iter()
+            .filter(|command| command.starts_with(&search_string));
+
+        let history_matches: Vec<String> = self
+            .history_database
+            .iter()
+            .filter(|history| history.get_command().starts_with(&search_string))
+            .map(|history| history.get_command().to_string())
+            .collect();
+
+        let mut filtered_commands: Vec<String> =
+            history_matches.into_iter().map(|s| s.to_string()).collect();
+        filtered_commands.extend(matches.map(|s| s.to_string()));
+
+        match filtered_commands.len() {
+            0 => {
+                return Err(RshError::new("No command found"));
+            }
+            _ => {
+                if filtered_commands.clone().len() <= *counter {
+                    *counter -= 1;
+                }
+                Ok(filtered_commands[*counter].clone())
+            }
+        }
     }
 
     fn rsh_split_line(&self, line: String) -> Vec<String> {
@@ -320,24 +381,6 @@ impl Rsh {
         r_vec.push(buffer.clone());
         buffer.clear();
         r_vec
-    }
-
-    fn ignore_tty_signals(&self) {
-        let sa = SigAction::new(SigHandler::SigIgn, SaFlags::empty(), SigSet::empty());
-        unsafe {
-            sigaction(Signal::SIGTSTP, &sa).unwrap();
-            sigaction(Signal::SIGTTIN, &sa).unwrap();
-            sigaction(Signal::SIGTTOU, &sa).unwrap();
-        }
-    }
-
-    fn restore_tty_signals(&self) {
-        let sa = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
-        unsafe {
-            sigaction(Signal::SIGTSTP, &sa).unwrap();
-            sigaction(Signal::SIGTTIN, &sa).unwrap();
-            sigaction(Signal::SIGTTOU, &sa).unwrap();
-        }
     }
 
     fn rsh_launch(&mut self, args: Vec<String>) -> Result<Status, RshError> {
@@ -463,16 +506,89 @@ impl Rsh {
         let mut tmp = 0;
         // 瓶覗 かめのぞき
         // コマンドの色
-        self.set_prompt_color("#a2d7dd".to_string()).unwrap();
+        self.set_prompt_color("#457E7D".to_string()).unwrap();
         for i in &print_buf_parts {
             execute!(stdout(), Print(i)).unwrap();
             if tmp < space_counter {
                 tmp += 1;
                 execute!(stdout(), Print(" ")).unwrap();
                 // コマンド引数の色
-                self.set_prompt_color("#ececec".to_string()).unwrap();
+                self.set_prompt_color("#809E8A".to_string()).unwrap();
             }
         }
+    }
+
+    /*
+    pub fn match_input(&mut self, stdout: &mut std::io::Stdout, code: KeyCode) -> bool {
+        match code {
+            KeyCode::Esc => {
+                self.set_mode(Mode::Nomal);
+                return true;
+            }
+            KeyCode::Char('h') => {
+                if self.cursor_x < self.buffer.len() {
+                    execute!(stdout, MoveLeft(1)).unwrap();
+                    self.cursor_x += 1;
+                }
+            }
+            _ => {}
+        }
+        false
+    }*/
+    pub fn rsh_move_cursor(&mut self) {
+        let mut stdout = stdout();
+
+        // 初期値
+        self.cursor_x = self.buffer.len();
+        enable_raw_mode().unwrap();
+        loop {
+            if let Event::Key(KeyEvent {
+                code,
+                modifiers: _,
+                kind: _,
+                state: _,
+            }) = read().unwrap()
+            {
+                match code {
+                    KeyCode::Esc => {
+                        self.set_mode(Mode::Nomal);
+                        break;
+                    }
+                    KeyCode::Char('h') => {
+                        // 相対移動
+                        // Bufferの文字列内でカーソルを移動させるため
+                        if self.cursor_x > 0 {
+                            execute!(stdout, MoveLeft(1)).unwrap();
+                            std::io::stdout().flush().unwrap();
+                            self.cursor_x -= 1;
+                        }
+                    }
+                    KeyCode::Char('l') => {
+                        // 相対移動
+                        // Bufferの文字列内でカーソルを移動させるため
+                        if self.cursor_x < self.buffer.len() {
+                            execute!(stdout, MoveRight(1)).unwrap();
+                            std::io::stdout().flush().unwrap();
+                            self.cursor_x += 1;
+                        }
+                    }
+                    KeyCode::Char('i') => {
+                        self.now_mode = Mode::Input;
+                        break;
+                    }
+                    KeyCode::Char('v') => {
+                        self.now_mode = Mode::Visual;
+                        break;
+                    }
+                    _ => {
+                        //if self.match_input(&mut stdout, code) {
+                        //break;
+                        //}
+                    }
+                }
+            }
+        }
+        disable_raw_mode().unwrap();
     }
 
     pub fn rsh_loop(&mut self) -> Result<Status, RshError> {
@@ -480,50 +596,37 @@ impl Rsh {
 
         self.ignore_tty_signals();
 
-        // 百入茶 ももしおちゃ
         execute!(stdout, Print("\n"),)
             .map_err(|_| RshError::new("Failed to print directory"))
             .unwrap();
-        std::io::stdout().flush().unwrap();
 
         // 絶対値なので相対移動になるようになんとかする
         let _ = execute!(stdout, MoveTo(0, 0), Clear(ClearType::All));
+
+        self.cursor_x = self.buffer.len();
 
         loop {
             enable_raw_mode().unwrap();
 
             let _ = self.set_prompt();
+            let prompt = Prompt::new(
+                username(),
+                self.get_current_dir_as_vec(),
+                self.return_code,
+                self.now_mode,
+            );
 
             self.rsh_print(self.buffer.clone());
 
             match self.now_mode {
                 Mode::Nomal => {
-                    loop {
-                        // キー入力の取得
-                        if let Event::Key(KeyEvent {
-                            code,
-                            modifiers: _,
-                            kind: _,
-                            state: _,
-                        }) = read().unwrap()
-                        {
-                            match code {
-                                KeyCode::Char('i') => {
-                                    self.now_mode = Mode::Input;
-                                    break;
-                                }
-                                KeyCode::Char('v') => {
-                                    //self.now_mode = Mode::Visual;
-                                    //break;
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
+                    self.rsh_move_cursor();
                 }
                 Mode::Input => {
-                    // 入力を取得
+                    // カーソルを指定の位置にずらす(Nomalモードで移動があった場合表示はここで更新される)
+                    execute!(stdout, MoveToColumn((prompt.len() + self.cursor_x) as u16)).unwrap();
 
+                    // 入力を取得
                     let mut pushed_tab = false;
                     let mut stack_buffer = String::new();
                     let mut tab_counter = 0;
@@ -563,15 +666,17 @@ impl Rsh {
                                         self.buffer = autocomplete;
                                     }
 
+                                    self.cursor_x = self.buffer.len();
+
                                     pushed_tab = true;
                                     tab_counter += 1;
                                 }
                                 KeyCode::Enter => break,
                                 KeyCode::Char(' ') => {
                                     // TABの直後にSpaceが入力された場合
-                                    self.buffer = format!("{} ", self.buffer);
+                                    self.buffer.insert(self.cursor_x, ' ');
                                     pushed_tab = false;
-                                    //space_counter += 1;
+                                    self.cursor_x += 1;
                                 }
                                 _ => {
                                     // TABの直後に文字が入力された場合
@@ -583,18 +688,47 @@ impl Rsh {
                                     }
                                     self.buffer = match code {
                                         KeyCode::Backspace => {
-                                            if let Some(last_char) = self.buffer.chars().last() {
-                                                if last_char == ' ' {
-                                                    //space_counter -= 1;
+                                            if self.cursor_x <= self.buffer.len() {
+                                                // 要素を削除
+                                                if self
+                                                    .buffer
+                                                    .chars()
+                                                    .nth(self.cursor_x - 1)
+                                                    .map_or(false, |c| c.is_ascii_alphabetic())
+                                                {
+                                                    // アルファベットである
+                                                    self.buffer.remove(self.cursor_x - 1);
+                                                    self.cursor_x -= 1;
+                                                } else {
+                                                    // アルファベットではない
+                                                    println!("err");
+                                                    std::io::stdout().flush().unwrap();
+                                                    continue;
                                                 }
                                             }
-                                            self.buffer.pop();
                                             self.buffer.clone()
                                         }
                                         KeyCode::Char(' ') => {
-                                            format!("{} ", self.buffer)
+                                            self.buffer.insert(self.cursor_x, ' ');
+                                            self.cursor_x += 1;
+                                            self.buffer.clone()
                                         }
-                                        KeyCode::Char(c) => format!("{}{}", self.buffer, c),
+                                        KeyCode::Char(c) => {
+                                            if c.is_ascii() {
+                                                if self.cursor_x < self.buffer.len() {
+                                                    self.buffer.insert(self.cursor_x, c);
+                                                } else {
+                                                    self.buffer.push(c);
+                                                }
+                                                self.cursor_x += 1;
+                                                self.buffer.clone()
+                                            } else {
+                                                // アルファベットではない
+                                                println!("err");
+                                                std::io::stdout().flush().unwrap();
+                                                continue;
+                                            }
+                                        }
                                         _ => self.buffer.clone(),
                                     };
                                 }
@@ -636,22 +770,17 @@ impl Rsh {
 
                         let _ = self.set_prompt();
 
-                        //クォートを一つ打ち込んでから二回目に打ち込むまで文字列表示が失われる
-                        // 矢印かN/I/V導入してコピペ作る
-                        let space_counter = self.buffer.chars().filter(|&c| c == ' ').count();
                         let print_buf_parts: Vec<String> = self.rsh_split_line(self.buffer.clone()); //print_buf.split_whitespace().collect();
 
-                        let mut tmp = 0;
                         // 瓶覗 かめのぞき
                         // コマンドの色
-                        self.set_prompt_color("#a2d7dd".to_string()).unwrap();
-                        for i in &print_buf_parts {
-                            execute!(stdout, Print(i)).unwrap();
-                            if tmp < space_counter {
-                                tmp += 1;
+                        self.set_prompt_color("#457E7D".to_string()).unwrap();
+                        // コマンド・コマンド引数ともに表示
+                        for (i, part) in print_buf_parts.iter().enumerate() {
+                            execute!(stdout, Print(part)).unwrap();
+                            if i < print_buf_parts.len() - 1 {
                                 execute!(stdout, Print(" ")).unwrap();
-                                // コマンド引数の色
-                                self.set_prompt_color("#ececec".to_string()).unwrap();
+                                self.set_prompt_color("#AC6383".to_string()).unwrap();
                             }
                         }
 
@@ -662,18 +791,14 @@ impl Rsh {
                                 filtered_commands[0][self.buffer.len()..].to_string(),
                             );
 
-                            // コマンド表示の色
-                            self.set_prompt_color("#a4a4a4".to_string()).unwrap();
+                            // コマンド補完表示の色
+                            self.set_prompt_color("#938274".to_string()).unwrap();
 
                             // コマンド・コマンド引数ともに表示
-                            for i in &print_buf_suffix {
-                                execute!(stdout, Print(i)).unwrap();
-                                if tmp < space_counter {
-                                    // コマンド同士の間の空白を描写
-                                    tmp += 1;
+                            for (i, part) in print_buf_suffix.iter().enumerate() {
+                                execute!(stdout, Print(part)).unwrap();
+                                if i < print_buf_suffix.len() - 1 {
                                     execute!(stdout, Print(" ")).unwrap();
-                                    // コマンド引数の色
-                                    self.set_prompt_color("#ececec".to_string()).unwrap();
                                 }
                             }
                         }
@@ -681,12 +806,14 @@ impl Rsh {
 
                     disable_raw_mode().unwrap();
 
-                    execute!(stdout, MoveToColumn(0), Print("\n")).unwrap();
-                    std::io::stdout().flush().unwrap();
+                    self.cursor_x = 0;
+                    self.set_prompt_color("#ECE1B4".to_string())?;
+                    execute!(stdout, MoveToColumn(0)).unwrap();
 
                     if self.now_mode != Mode::Input {
                         continue;
                     }
+                    execute!(stdout, Print("\n")).unwrap();
 
                     // 入力を実行可能な形式に分割
                     let args = self.rsh_split_line(self.buffer.clone());
@@ -714,6 +841,14 @@ impl Rsh {
                         err @ Err(_) => return err,
                     };
                 }
+
+                /*
+                Mode::Visual => {
+                    self.rsh_move_cursor();
+                    if self.now_mode != Mode::Visual {
+                        continue;
+                    }
+                }*/
                 _ => {}
             }
         }
@@ -729,6 +864,7 @@ impl Rsh {
             return_code: 0,
             exists_rshenv: false,
             now_mode: Mode::Nomal,
+            cursor_x: 0,
         }
     }
 }
@@ -736,4 +872,11 @@ impl Rsh {
 fn main() {
     let mut rsh = Rsh::new();
     let code = rsh.rsh_loop();
+    match code {
+        Err(e) => {
+            println!("{}", e.message);
+            std::io::stdout().flush().unwrap();
+        }
+        _ => {}
+    }
 }
