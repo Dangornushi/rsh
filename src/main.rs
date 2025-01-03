@@ -740,6 +740,7 @@ impl Rsh {
 
                         let print_buf_parts: Vec<String> = self.rsh_split_line(self.buffer.clone()); //print_buf.split_whitespace().collect();
 
+                        let mut multibyte_counter = 0;
                         // 瓶覗 かめのぞき
                         // コマンドの色
                         self.set_prompt_color("#457E7D".to_string()).unwrap();
@@ -775,7 +776,9 @@ impl Rsh {
                                 }
                             }
 
-                            execute!(stdout, MoveLeft(print_length as u16)).unwrap();
+                            if print_length > 0 {
+                                execute!(stdout, MoveLeft(print_length as u16),).unwrap();
+                            }
                         }
                     }
 
