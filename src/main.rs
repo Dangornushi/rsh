@@ -851,10 +851,20 @@ fn main() {
     let mut rsh = Rsh::new();
     let code = rsh.rsh_loop();
     match code {
-        Err(e) => {
-            println!("{}", e.message);
-            std::io::stdout().flush().unwrap();
-        }
-        _ => {}
+        Err(err) => {
+            if let Err(e) = execute!(
+                stdout(),
+                MoveToColumn(0),
+                Clear(ClearType::UntilNewLine),
+                SetForegroundColor(Color::White),
+                Print("rsh: " ),
+                SetForegroundColor(Color::Red),
+                Print(err.message),
+                Print("\n" ),
+                SetForegroundColor(Color::White),
+            ) {
+                eprintln!("Failed to execute command: {}", e);
+            } }
+        _ => (),
     }
 }
