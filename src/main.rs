@@ -617,6 +617,8 @@ impl Rsh {
 
                     loop {
                         self.get_directory_contents("./");
+                        // カーソルを指定の位置にずらす(Nomalモードで移動があった場合表示はここで更新される)
+                        execute!(stdout, MoveToColumn((prompt.len() + self.cursor_x) as u16)).unwrap();
 
                         // キー入力の取得
                         if let Event::Key(KeyEvent {
@@ -693,7 +695,7 @@ impl Rsh {
                                             self.buffer.clone()
                                         }
                                         KeyCode::Char(c) => {
-                                            self.buffer.push(c);
+                                            self.buffer.insert(self.cursor_x, c);
                                             self.cursor_x += 1;
                                             self.buffer.clone()
                                         }
@@ -864,7 +866,8 @@ fn main() {
                 SetForegroundColor(Color::White),
             ) {
                 eprintln!("Failed to execute command: {}", e);
-            } }
+            }
+        }
         _ => (),
     }
 }
