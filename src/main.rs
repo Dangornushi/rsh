@@ -278,7 +278,7 @@ impl Rsh {
         self.set_prompt_color("#fafafa".to_string())?;
         execute!(stdout, Print("] > ")).unwrap();
 
-        std::io::stdout().flush().unwrap();
+        //std::io::stdout().flush().unwrap();
         // --------------------------------------------------------
         Ok(())
     }
@@ -663,13 +663,14 @@ impl Rsh {
                                     self.cursor_x += 1;
                                 }
                                 _ => {
+                                    /*
                                     // TABの直後に文字が入力された場合
                                     if pushed_tab {
                                         // 予測変換をキャンセルさせる
                                         self.buffer = stack_buffer.clone();
                                         pushed_tab = false;
                                         tab_counter = 0;
-                                    }
+                                    } */
                                     self.buffer = match code {
                                         KeyCode::Backspace => {
                                             if self.cursor_x <= self.buffer.len()
@@ -689,13 +690,12 @@ impl Rsh {
                                             }
                                             self.buffer.clone()
                                         }
-                                        KeyCode::Char(' ') => {
-                                            self.buffer.insert(self.cursor_x, ' ');
-                                            self.cursor_x += 1;
-                                            self.buffer.clone()
-                                        }
                                         KeyCode::Char(c) => {
-                                            self.buffer.insert(self.cursor_x, c);
+                                            if self.cursor_x >= self.buffer.len() {
+                                                self.buffer.push(c);
+                                            } else {
+                                                self.buffer.insert(self.cursor_x, c);
+                                            }
                                             self.cursor_x += 1;
                                             self.buffer.clone()
                                         }
