@@ -521,14 +521,26 @@ impl Rsh {
     pub fn rsh_move_cursor(&mut self, prompt: Prompt) {
         let mut stdout = stdout();
         let mut range_string = String::new();
-        let start_pos = 0;
+        let start_pos = self.cursor_x;
+        // 範囲選択がどの方向に進んでいるか
+        let mut direction: &str = "left";
 
         // 初期値
         self.cursor_x = self.buffer.len();
+
         enable_raw_mode().unwrap();
         loop {
+            if start_pos > self.cursor_x {
+                direction = "left";
+            } else if start_pos < self.cursor_x {
+                direction = "right";
+            }
+            /*
+            // デザイン部分
             if self.now_mode == Mode::Visual {
                 //選択されている部分
+                //     println!("{} {}", start_pos, self.cursor_x);
+                stdout.flush().unwrap();
                 for pos in start_pos..self.cursor_x {
                     execute!(
                         stdout,
@@ -550,6 +562,8 @@ impl Rsh {
                 }
                 execute!(stdout, MoveToColumn((prompt.len() + self.cursor_x) as u16)).unwrap();
             }
+            */
+
             if let Event::Key(KeyEvent {
                 code,
                 modifiers: _,
@@ -557,6 +571,7 @@ impl Rsh {
                 state: _,
             }) = read().unwrap()
             {
+                // "( )" ← この文字があると不具合が発生する
                 match code {
                     KeyCode::Esc => {
                         self.set_mode(Mode::Nomal);
@@ -568,8 +583,13 @@ impl Rsh {
                         if self.cursor_x > 0 {
                             execute!(stdout, MoveLeft(1)).unwrap();
                             stdout.flush().unwrap();
+                            if direction == "right" {
+                                range_string.pop();
+                            } else {
+                                range_string
+                                    .push(self.buffer.chars().nth(self.cursor_x - 1).unwrap());
+                            }
                             self.cursor_x -= 1;
-                            range_string.pop();
                         }
                     }
                     KeyCode::Char('l') => {
@@ -578,7 +598,11 @@ impl Rsh {
                         if self.cursor_x < self.buffer.len() {
                             execute!(stdout, MoveRight(1)).unwrap();
                             stdout.flush().unwrap();
-                            range_string.push(self.buffer.chars().nth(self.cursor_x).unwrap());
+                            if direction == "left" {
+                                range_string.pop();
+                            } else {
+                                range_string.push(self.buffer.chars().nth(self.cursor_x).unwrap());
+                            }
                             self.cursor_x += 1;
                         }
                     }
@@ -600,6 +624,11 @@ impl Rsh {
             }
         }
         disable_raw_mode().unwrap();
+        if direction == "left" {
+            range_string = range_string.chars().rev().collect();
+        }
+        println!("\n{}", range_string);
+        stdout.flush().unwrap();
     }
 
     pub fn rsh_loop(&mut self) -> Result<Status, RshError> {
