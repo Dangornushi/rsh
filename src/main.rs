@@ -518,13 +518,38 @@ impl Rsh {
         }
     }
 
-    pub fn rsh_move_cursor(&mut self) {
+    pub fn rsh_move_cursor(&mut self, prompt: Prompt) {
         let mut stdout = stdout();
+        let mut range_string = String::new();
+        let start_pos = 0;
 
         // 初期値
         self.cursor_x = self.buffer.len();
         enable_raw_mode().unwrap();
         loop {
+            if self.now_mode == Mode::Visual {
+                //選択されている部分
+                for pos in start_pos..self.cursor_x {
+                    execute!(
+                        stdout,
+                        MoveToColumn((prompt.len() + pos) as u16),
+                        SetBackgroundColor(Color::Blue),
+                        Print(self.buffer.chars().nth(pos).unwrap()),
+                    )
+                    .unwrap();
+                }
+                // 選択されていない部分
+                for pos in self.cursor_x..self.buffer.len() {
+                    execute!(
+                        stdout,
+                        MoveToColumn((prompt.len() + pos) as u16),
+                        SetBackgroundColor(Color::Reset),
+                        Print(self.buffer.chars().nth(pos).unwrap()),
+                    )
+                    .unwrap();
+                }
+                execute!(stdout, MoveToColumn((prompt.len() + self.cursor_x) as u16)).unwrap();
+            }
             if let Event::Key(KeyEvent {
                 code,
                 modifiers: _,
@@ -542,7 +567,9 @@ impl Rsh {
                         // Bufferの文字列内でカーソルを移動させるため
                         if self.cursor_x > 0 {
                             execute!(stdout, MoveLeft(1)).unwrap();
+                            stdout.flush().unwrap();
                             self.cursor_x -= 1;
+                            range_string.pop();
                         }
                     }
                     KeyCode::Char('l') => {
@@ -550,6 +577,8 @@ impl Rsh {
                         // Bufferの文字列内でカーソルを移動させるため
                         if self.cursor_x < self.buffer.len() {
                             execute!(stdout, MoveRight(1)).unwrap();
+                            stdout.flush().unwrap();
+                            range_string.push(self.buffer.chars().nth(self.cursor_x).unwrap());
                             self.cursor_x += 1;
                         }
                     }
@@ -602,7 +631,7 @@ impl Rsh {
 
             match self.now_mode {
                 Mode::Nomal => {
-                    self.rsh_move_cursor();
+                    self.rsh_move_cursor(prompt);
                 }
                 Mode::Input => {
                     // カーソルを指定の位置にずらす(Nomalモードで移動があった場合表示はここで更新される)
@@ -618,7 +647,8 @@ impl Rsh {
                     loop {
                         self.get_directory_contents("./");
                         // カーソルを指定の位置にずらす(Nomalモードで移動があった場合表示はここで更新される)
-                        execute!(stdout, MoveToColumn((prompt.len() + self.cursor_x) as u16)).unwrap();
+                        execute!(stdout, MoveToColumn((prompt.len() + self.cursor_x) as u16))
+                            .unwrap();
 
                         // キー入力の取得
                         if let Event::Key(KeyEvent {
@@ -822,13 +852,14 @@ impl Rsh {
                     };
                 }
 
-                /*
                 Mode::Visual => {
-                    self.rsh_move_cursor();
+                    // 行の文字の先頭に移動
+                    execute!(stdout, MoveLeft(self.buffer.len() as u16)).unwrap();
+                    self.rsh_move_cursor(prompt);
                     if self.now_mode != Mode::Visual {
                         continue;
                     }
-                }*/
+                }
                 _ => {}
             }
         }
@@ -859,10 +890,10 @@ fn main() {
                 MoveToColumn(0),
                 Clear(ClearType::UntilNewLine),
                 SetForegroundColor(Color::White),
-                Print("rsh: " ),
+                Print("rsh: "),
                 SetForegroundColor(Color::Red),
                 Print(err.message),
-                Print("\n" ),
+                Print("\n"),
                 SetForegroundColor(Color::White),
             ) {
                 eprintln!("Failed to execute command: {}", e);
