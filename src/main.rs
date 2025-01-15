@@ -518,6 +518,22 @@ impl Rsh {
         }
     }
 
+    pub fn get_string_at_cursor(&self, start_pos: usize) -> String {
+        self
+            .buffer
+            .chars()
+            .enumerate()
+            .filter(|(i, _)| {
+                if start_pos < self.cursor_x {
+                    *i < start_pos || *i > self.cursor_x
+                } else {
+                    *i < self.cursor_x || *i > start_pos
+                }
+            })
+            .map(|(_, c)| c)
+            .collect()
+    }
+
     pub fn rsh_move_cursor(&mut self, prompt: Prompt) {
         let mut stdout = stdout();
         let mut range_string = String::new();
@@ -535,7 +551,6 @@ impl Rsh {
             } else if start_pos < self.cursor_x {
                 direction = "right";
             }
-            /*
             // デザイン部分
             if self.now_mode == Mode::Visual {
                 //選択されている部分
@@ -562,7 +577,6 @@ impl Rsh {
                 }
                 execute!(stdout, MoveToColumn((prompt.len() + self.cursor_x) as u16)).unwrap();
             }
-            */
 
             if let Event::Key(KeyEvent {
                 code,
@@ -614,6 +628,21 @@ impl Rsh {
                         self.now_mode = Mode::Visual;
                         break;
                     }
+                    KeyCode::Char('d') => {
+                        // 選択された文字列を削除
+                        if direction == "left" {
+                            range_string = range_string.chars().rev().collect();
+                        }
+                        for _ in 0..range_string.len() {
+                            execute!(stdout, MoveLeft(1)).unwrap();
+                            execute!(stdout, Print(" ")).unwrap();
+                            execute!(stdout, MoveLeft(1)).unwrap();
+                        }
+                        self.buffer = self.get_string_at_cursor(start_pos);
+                        self.cursor_x = self.buffer.len();
+                        self.now_mode = Mode::Nomal;
+                        break;
+                    }
                     _ => {
                         //if self.match_input(&mut stdout, code) {
                         //break;
@@ -627,7 +656,7 @@ impl Rsh {
         if direction == "left" {
             range_string = range_string.chars().rev().collect();
         }
-        println!("\n{}", range_string);
+        //println!("\n{}", range_string);
         stdout.flush().unwrap();
     }
 
@@ -801,7 +830,6 @@ impl Rsh {
 
                         let print_buf_parts: Vec<String> = self.rsh_split_line(self.buffer.clone()); //print_buf.split_whitespace().collect();
 
-                        let mut multibyte_counter = 0;
                         // 瓶覗 かめのぞき
                         // コマンドの色
                         self.set_prompt_color("#457E7D".to_string()).unwrap();
@@ -883,7 +911,6 @@ impl Rsh {
 
                 Mode::Visual => {
                     // 行の文字の先頭に移動
-                    execute!(stdout, MoveLeft(self.buffer.len() as u16)).unwrap();
                     self.rsh_move_cursor(prompt);
                     if self.now_mode != Mode::Visual {
                         continue;
