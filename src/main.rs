@@ -519,8 +519,7 @@ impl Rsh {
     }
 
     pub fn get_string_at_cursor(&self, start_pos: usize) -> String {
-        self
-            .buffer
+        self.buffer
             .chars()
             .enumerate()
             .filter(|(i, _)| {
@@ -542,40 +541,67 @@ impl Rsh {
         let mut direction: &str = "left";
 
         // 初期値
-        self.cursor_x = self.buffer.len();
+        if self.now_mode == Mode::Nomal {
+            self.cursor_x = self.buffer.len();
+        }
 
         enable_raw_mode().unwrap();
         loop {
             if start_pos > self.cursor_x {
                 direction = "left";
-            } else if start_pos < self.cursor_x {
+            } else if start_pos <= self.cursor_x {
                 direction = "right";
             }
             // デザイン部分
             if self.now_mode == Mode::Visual {
                 //選択されている部分
-                //     println!("{} {}", start_pos, self.cursor_x);
-                stdout.flush().unwrap();
-                for pos in start_pos..self.cursor_x {
-                    execute!(
-                        stdout,
-                        MoveToColumn((prompt.len() + pos) as u16),
-                        SetBackgroundColor(Color::Blue),
-                        Print(self.buffer.chars().nth(pos).unwrap()),
-                    )
-                    .unwrap();
+                if direction == "left" {
+                    // self.cursor_x..start_pos => 選択している範囲
+                    for pos in self.cursor_x..start_pos {
+                        execute!(
+                            stdout,
+                            MoveToColumn((prompt.len() + pos) as u16),
+                            SetBackgroundColor(Color::Blue),
+                            Print(self.buffer.chars().nth(pos).unwrap()),
+                        )
+                        .unwrap();
+                    }
+                    /*
+                    for pos in self.cursor_x..self.buffer.len() {
+                        execute!(
+                            stdout,
+                            MoveToColumn((prompt.len() + pos) as u16),
+                            SetBackgroundColor(Color::Reset),
+                            Print(self.buffer.chars().nth(pos).unwrap()),
+                        )
+                        .unwrap();
+                    }*/
+
+                    // 選択されていない部分
+                    execute!(stdout, MoveToColumn((prompt.len() + self.cursor_x) as u16)).unwrap();
+                } else {
+                    for pos in start_pos..self.cursor_x {
+                        execute!(
+                            stdout,
+                            MoveToColumn((prompt.len() + pos) as u16),
+                            SetBackgroundColor(Color::Blue),
+                            Print(self.buffer.chars().nth(pos).unwrap()),
+                        )
+                        .unwrap();
+                    }
+                    for pos in self.cursor_x..self.buffer.len() {
+                        execute!(
+                            stdout,
+                            MoveToColumn((prompt.len() + pos) as u16),
+                            SetBackgroundColor(Color::Reset),
+                            Print(self.buffer.chars().nth(pos).unwrap()),
+                        )
+                        .unwrap();
+                    }
+
+                    // 選択されていない部分
+                    execute!(stdout, MoveToColumn((prompt.len() + self.cursor_x) as u16)).unwrap();
                 }
-                // 選択されていない部分
-                for pos in self.cursor_x..self.buffer.len() {
-                    execute!(
-                        stdout,
-                        MoveToColumn((prompt.len() + pos) as u16),
-                        SetBackgroundColor(Color::Reset),
-                        Print(self.buffer.chars().nth(pos).unwrap()),
-                    )
-                    .unwrap();
-                }
-                execute!(stdout, MoveToColumn((prompt.len() + self.cursor_x) as u16)).unwrap();
             }
 
             if let Event::Key(KeyEvent {
@@ -910,7 +936,6 @@ impl Rsh {
                 }
 
                 Mode::Visual => {
-                    // 行の文字の先頭に移動
                     self.rsh_move_cursor(prompt);
                     if self.now_mode != Mode::Visual {
                         continue;
