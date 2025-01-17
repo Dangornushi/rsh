@@ -795,12 +795,22 @@ impl Rsh {
                                             self.buffer.clone()
                                         }
                                         KeyCode::Char(c) => {
-                                            if self.cursor_x >= self.buffer.len() {
-                                                self.buffer.push(c);
+                                            if c.is_ascii() {
+                                                if self.cursor_x >= self.buffer.len() {
+                                                    self.buffer.push(c);
+                                                } else {
+                                                    self.buffer.insert(self.cursor_x, c);
+                                                }
+                                                self.cursor_x += 1;
                                             } else {
-                                                self.buffer.insert(self.cursor_x, c);
+                                                let mut buf = [0; 4];
+                                                let c_str = c.encode_utf8(&mut buf);
+                                                stdout.flush().unwrap();
+                                                for ch in c_str.chars() {
+                                                    self.buffer.insert(self.cursor_x, ch);
+                                                    self.cursor_x += c_str.len();
+                                                }
                                             }
-                                            self.cursor_x += 1;
                                             self.buffer.clone()
                                         }
                                         _ => self.buffer.clone(),
