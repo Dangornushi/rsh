@@ -44,9 +44,9 @@ struct Prompt {
 impl Prompt {
     pub fn new(username: String, pwd: Vec<String>, return_code: i32, mode: Mode) -> Self {
         let mode_str = match mode {
-            Mode::Nomal => "Nomal",
-            Mode::Input => "Input",
-            Mode::Visual => "Visual",
+            Mode::Nomal => "N",
+            Mode::Input => "I",
+            Mode::Visual => "V",
             _ => "Else",
         };
 
@@ -220,9 +220,9 @@ impl Rsh {
 
     fn get_mode_string(&self) -> &str {
         match self.now_mode {
-            Mode::Nomal => "Nomal",
-            Mode::Input => "Input",
-            Mode::Visual => "Visual",
+            Mode::Nomal => "N",
+            Mode::Input => "I",
+            Mode::Visual => "V",
             _ => "Else",
         }
     }
@@ -557,51 +557,41 @@ impl Rsh {
                 //選択されている部分
                 if direction == "left" {
                     // self.cursor_x..start_pos => 選択している範囲
-                    for pos in self.cursor_x..start_pos {
-                        execute!(
-                            stdout,
-                            MoveToColumn((prompt.len() + pos) as u16),
-                            SetBackgroundColor(Color::Blue),
-                            Print(self.buffer.chars().nth(pos).unwrap()),
-                        )
-                        .unwrap();
-                    }
-                    /*
                     for pos in self.cursor_x..self.buffer.len() {
                         execute!(
                             stdout,
                             MoveToColumn((prompt.len() + pos) as u16),
-                            SetBackgroundColor(Color::Reset),
+                            if pos <= start_pos {
+                                SetBackgroundColor(Color::Blue)
+                            } else {
+                                SetBackgroundColor(Color::Reset)
+                            },
                             Print(self.buffer.chars().nth(pos).unwrap()),
                         )
                         .unwrap();
-                    }*/
-
-                    // 選択されていない部分
-                    execute!(stdout, MoveToColumn((prompt.len() + self.cursor_x) as u16)).unwrap();
+                    }
                 } else {
-                    for pos in start_pos..self.cursor_x {
+                    for pos in start_pos..self.buffer.len() {
                         execute!(
                             stdout,
                             MoveToColumn((prompt.len() + pos) as u16),
-                            SetBackgroundColor(Color::Blue),
+                            if pos <= self.cursor_x {
+                                SetBackgroundColor(Color::Blue)
+                            } else {
+                                SetBackgroundColor(Color::Reset)
+                            },
                             Print(self.buffer.chars().nth(pos).unwrap()),
                         )
                         .unwrap();
                     }
-                    for pos in self.cursor_x..self.buffer.len() {
-                        execute!(
-                            stdout,
-                            MoveToColumn((prompt.len() + pos) as u16),
-                            SetBackgroundColor(Color::Reset),
-                            Print(self.buffer.chars().nth(pos).unwrap()),
-                        )
-                        .unwrap();
-                    }
-
-                    // 選択されていない部分
-                    execute!(stdout, MoveToColumn((prompt.len() + self.cursor_x) as u16)).unwrap();
                 }
+                // 選択されていない部分
+                execute!(
+                    stdout,
+                    SetBackgroundColor(Color::Reset),
+                    MoveToColumn((prompt.len() + self.cursor_x) as u16)
+                )
+                .unwrap();
             }
 
             if let Event::Key(KeyEvent {
