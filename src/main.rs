@@ -86,10 +86,24 @@ enum Mode {
     Input,
 }
 
+struct Buffer {
+    buffer: String,
+    multi_byte: Vec<bool>,
+}
+
+impl Buffer {
+    pub fn new() -> Self {
+        Self {
+            buffer: String::new(),
+            multi_byte: Vec::new(),
+        }
+    }
+}
+
 #[derive()]
 struct Rsh {
     prompt: String,
-    buffer: String,
+    buffer: Buffer,
     env_database: Vec<String>,
     history_database: Vec<History>,
     command_database: Vec<String>,
@@ -520,6 +534,7 @@ impl Rsh {
 
     pub fn get_string_at_cursor(&self, start_pos: usize) -> String {
         self.buffer
+            .buffer
             .chars()
             .enumerate()
             .filter(|(i, _)| {
@@ -542,7 +557,7 @@ impl Rsh {
 
         // 初期値
         if self.now_mode == Mode::Nomal {
-            self.cursor_x = self.buffer.len();
+            self.cursor_x = self.buffer.buffer.len();
         }
 
         enable_raw_mode().unwrap();
@@ -557,7 +572,7 @@ impl Rsh {
                 //選択されている部分
                 if direction == "left" {
                     // self.cursor_x..start_pos => 選択している範囲
-                    for pos in self.cursor_x..self.buffer.len() {
+                    for pos in self.cursor_x..self.buffer.buffer.len() {
                         execute!(
                             stdout,
                             MoveToColumn((prompt.len() + pos) as u16),
@@ -566,12 +581,12 @@ impl Rsh {
                             } else {
                                 SetBackgroundColor(Color::Reset)
                             },
-                            Print(self.buffer.chars().nth(pos).unwrap()),
+                            Print(self.buffer.buffer.chars().nth(pos).unwrap()),
                         )
                         .unwrap();
                     }
                 } else {
-                    for pos in start_pos..self.buffer.len() {
+                    for pos in start_pos..self.buffer.buffer.len() {
                         execute!(
                             stdout,
                             MoveToColumn((prompt.len() + pos) as u16),
@@ -580,7 +595,7 @@ impl Rsh {
                             } else {
                                 SetBackgroundColor(Color::Reset)
                             },
-                            Print(self.buffer.chars().nth(pos).unwrap()),
+                            Print(self.buffer.buffer.chars().nth(pos).unwrap()),
                         )
                         .unwrap();
                     }
@@ -616,8 +631,9 @@ impl Rsh {
                             if direction == "right" {
                                 range_string.pop();
                             } else {
-                                range_string
-                                    .push(self.buffer.chars().nth(self.cursor_x - 1).unwrap());
+                                range_string.push(
+                                    self.buffer.buffer.chars().nth(self.cursor_x - 1).unwrap(),
+                                );
                             }
                             self.cursor_x -= 1;
                         }
@@ -625,13 +641,14 @@ impl Rsh {
                     KeyCode::Char('l') => {
                         // 相対移動
                         // Bufferの文字列内でカーソルを移動させるため
-                        if self.cursor_x < self.buffer.len() {
+                        if self.cursor_x < self.buffer.buffer.len() {
                             execute!(stdout, MoveRight(1)).unwrap();
                             stdout.flush().unwrap();
                             if direction == "left" {
                                 range_string.pop();
                             } else {
-                                range_string.push(self.buffer.chars().nth(self.cursor_x).unwrap());
+                                range_string
+                                    .push(self.buffer.buffer.chars().nth(self.cursor_x).unwrap());
                             }
                             self.cursor_x += 1;
                         }
@@ -654,8 +671,8 @@ impl Rsh {
                             execute!(stdout, Print(" ")).unwrap();
                             execute!(stdout, MoveLeft(1)).unwrap();
                         }
-                        self.buffer = self.get_string_at_cursor(start_pos);
-                        self.cursor_x = self.buffer.len();
+                        self.buffer.buffer = self.get_string_at_cursor(start_pos);
+                        self.cursor_x = self.buffer.buffer.len();
                         self.now_mode = Mode::Nomal;
                         break;
                     }
@@ -688,7 +705,9 @@ impl Rsh {
         // 絶対値なので相対移動になるようになんとかする
         let _ = execute!(stdout, MoveTo(0, 0), Clear(ClearType::All));
 
-        self.cursor_x = self.buffer.len();
+        self.cursor_x = self.buffer.buffer.len();
+
+        let mut isnt_ascii_counter = 0;
 
         loop {
             enable_raw_mode().unwrap();
@@ -701,7 +720,7 @@ impl Rsh {
                 self.now_mode,
             );
 
-            self.rsh_print(self.buffer.clone());
+            self.rsh_print(self.buffer.buffer.clone());
 
             match self.now_mode {
                 Mode::Nomal => {
@@ -721,8 +740,13 @@ impl Rsh {
                     loop {
                         self.get_directory_contents("./");
                         // カーソルを指定の位置にずらす(Nomalモードで移動があった場合表示はここで更新される)
-                        execute!(stdout, MoveToColumn((prompt.len() + self.cursor_x) as u16))
-                            .unwrap();
+                        execute!(
+                            stdout,
+                            MoveToColumn(
+                                (prompt.len() + self.cursor_x - isnt_ascii_counter) as u16
+                            )
+                        )
+                        .unwrap();
 
                         // キー入力の取得
                         if let Event::Key(KeyEvent {
@@ -740,7 +764,7 @@ impl Rsh {
                                 KeyCode::Tab => {
                                     if !pushed_tab {
                                         // 現時点で入力されている文字のバックアップ
-                                        stack_buffer = self.buffer.clone();
+                                        stack_buffer = self.buffer.buffer.clone();
                                     }
                                     // コマンドDBの取得
                                     self.get_executable_commands();
@@ -751,10 +775,10 @@ impl Rsh {
                                     if let Ok(autocomplete) =
                                         self.rsh_char_search(stack_buffer.clone(), &mut tab_counter)
                                     {
-                                        self.buffer = autocomplete;
+                                        self.buffer.buffer = autocomplete;
                                     }
 
-                                    self.cursor_x = self.buffer.len();
+                                    self.cursor_x = self.buffer.buffer.len();
 
                                     pushed_tab = true;
                                     tab_counter += 1;
@@ -762,58 +786,96 @@ impl Rsh {
                                 KeyCode::Enter => break,
                                 KeyCode::Char(' ') => {
                                     // TABの直後にSpaceが入力された場合
-                                    self.buffer.insert(self.cursor_x, ' ');
+                                    self.buffer.buffer.insert(self.cursor_x, ' ');
+                                    self.buffer.multi_byte.insert(self.cursor_x, false);
                                     pushed_tab = false;
                                     self.cursor_x += 1;
                                 }
                                 _ => {
-                                    /*
-                                    // TABの直後に文字が入力された場合
-                                    if pushed_tab {
-                                        // 予測変換をキャンセルさせる
-                                        self.buffer = stack_buffer.clone();
-                                        pushed_tab = false;
-                                        tab_counter = 0;
-                                    } */
-                                    self.buffer = match code {
+                                    self.buffer.buffer = match code {
                                         KeyCode::Backspace => {
-                                            if self.cursor_x <= self.buffer.len()
+                                            println!(
+                                                "remove: {:?}, {:?}, {}",
+                                                self.buffer.buffer.chars().collect::<Vec<char>>(),
+                                                self.buffer.multi_byte,
+                                                self.cursor_x
+                                            );
+                                            stdout.flush().unwrap();
+                                            // カーソルがバッファの範囲内にある場合
+                                            if self.cursor_x <= self.buffer.buffer.len()
                                                 && self.cursor_x > 0
                                             {
                                                 // 要素を削除
-                                                // アルファベットではない
-                                                let mut char_indices = self.buffer.char_indices();
-                                                if self.cursor_x > 0 {
-                                                    if let Some((idx, _)) =
-                                                        char_indices.nth(self.cursor_x - 1)
-                                                    {
-                                                        self.buffer.remove(idx);
-                                                    }
+                                                if self
+                                                    .buffer
+                                                    .buffer
+                                                    .is_char_boundary(self.cursor_x - 1)
+                                                {
+                                                    // それ以外
+                                                    self.buffer.buffer.remove(self.cursor_x - 1);
+                                                    self.buffer
+                                                        .multi_byte
+                                                        .remove(self.cursor_x - 1);
+                                                    self.cursor_x -= 1;
+                                                } else {
+                                                    /*
+                                                                                                        // 今フォーカスしている文字列がマルチバイト文字かどうか判定する必要がある
+                                                                                                        // self.buffer.multi_byte[index]で特定の文字がマルチバイト文字かどうかを判定する
+                                                                                                        // フォーカスしている文字列がマルチバイト文字の場合適切な長さを余分にマイナスする
+                                                                                                        // 今フォーカスしている文字がマルチバイト配列の何要素目かを取得し、その要素をbufferから削除する
+
+                                                                                                        //  マルチバイト文字の場合
+                                                                                                        // 文字列を切り出して削除し再定義
+                                                                                                        let mut buffer_chars = self
+                                                                                                            .buffer
+                                                                                                            .buffer
+                                                                                                            .chars()
+                                                                                                            .collect::<Vec<char>>();
+                                                                                                        buffer_chars.remove(self.cursor_x / 3 - 1);
+                                                                                                        self.buffer.buffer =
+                                                                                                            buffer_chars.into_iter().collect();
+                                                                                                        self.buffer
+                                                                                                            .multi_byte
+                                                                                                            .remove(self.cursor_x / 3 - 1);
+                                                                                                        self.cursor_x -= 2;
+                                                                                                        isnt_ascii_counter -= 1;
+                                                    */
                                                 }
-                                                self.cursor_x -= 1;
                                             }
-                                            self.buffer.clone()
+                                            self.buffer.buffer.clone()
                                         }
                                         KeyCode::Char(c) => {
                                             if c.is_ascii() {
-                                                if self.cursor_x >= self.buffer.len() {
-                                                    self.buffer.push(c);
+                                                if self.cursor_x >= self.buffer.buffer.len() {
+                                                    self.buffer.buffer.push(c);
+                                                    self.buffer.multi_byte.push(false);
                                                 } else {
-                                                    self.buffer.insert(self.cursor_x, c);
+                                                    self.buffer.buffer.insert(self.cursor_x, c);
+                                                    self.buffer
+                                                        .multi_byte
+                                                        .insert(self.cursor_x, false);
                                                 }
                                                 self.cursor_x += 1;
                                             } else {
                                                 let mut buf = [0; 4];
                                                 let c_str = c.encode_utf8(&mut buf);
-                                                stdout.flush().unwrap();
                                                 for ch in c_str.chars() {
-                                                    self.buffer.insert(self.cursor_x, ch);
+                                                    self.buffer.buffer.insert(self.cursor_x, ch);
                                                     self.cursor_x += c_str.len();
+                                                    // 全角文字の場合は文字のとる幅から余分な文を減らすためカウンタを増やす
+                                                    isnt_ascii_counter += 1;
+                                                }
+                                                if self.cursor_x >= self.buffer.buffer.len() {
+                                                    self.buffer.multi_byte.push(true);
+                                                } else {
+                                                    self.buffer
+                                                        .multi_byte
+                                                        .insert(self.cursor_x, true);
                                                 }
                                             }
-                                            self.buffer.clone()
+                                            self.buffer.buffer.clone()
                                         }
-                                        _ => self.buffer.clone(),
+                                        _ => self.buffer.buffer.clone(),
                                     };
                                 }
                             }
@@ -823,7 +885,9 @@ impl Rsh {
                         let history_matches: Vec<String> = self
                             .history_database
                             .iter()
-                            .filter(|history| history.get_command().starts_with(&self.buffer))
+                            .filter(|history| {
+                                history.get_command().starts_with(&self.buffer.buffer)
+                            })
                             .map(|history| history.get_command().to_string())
                             .collect();
 
@@ -831,7 +895,7 @@ impl Rsh {
                         let matches = self
                             .command_database
                             .iter()
-                            .filter(|command| command.starts_with(&self.buffer));
+                            .filter(|command| command.starts_with(&self.buffer.buffer));
 
                         // 上記を配列に変換
                         let mut filtered_commands: Vec<String> =
@@ -843,9 +907,10 @@ impl Rsh {
                             for env_path in self.env_database.clone() {
                                 // command_databaseの中からenv_path/bufferで始まるものを取得
                                 let matches = self.command_database.iter().filter(|command| {
-                                    let command_path = format!("{}/{}", env_path, self.buffer);
-                                    command.starts_with(&self.buffer)
-                                        || command_path.starts_with(&self.buffer)
+                                    let command_path =
+                                        format!("{}/{}", env_path, self.buffer.buffer);
+                                    command.starts_with(&self.buffer.buffer)
+                                        || command_path.starts_with(&self.buffer.buffer)
                                 });
                                 // 上記を配列に変換
                                 filtered_commands = matches.map(|s| s.to_string()).collect();
@@ -854,7 +919,8 @@ impl Rsh {
 
                         let _ = self.set_prompt();
 
-                        let print_buf_parts: Vec<String> = self.rsh_split_line(self.buffer.clone()); //print_buf.split_whitespace().collect();
+                        let print_buf_parts: Vec<String> =
+                            self.rsh_split_line(self.buffer.buffer.clone()); //print_buf.split_whitespace().collect();
 
                         // 瓶覗 かめのぞき
                         // コマンドの色
@@ -874,7 +940,7 @@ impl Rsh {
                         if filtered_commands.len() > 0 {
                             // 部分的に一致しているコマンドの先頭の要素からbufferから先を取得
                             let print_buf_suffix = self.rsh_split_line(
-                                filtered_commands[0][self.buffer.len()..].to_string(),
+                                filtered_commands[0][self.buffer.buffer.len()..].to_string(),
                             );
 
                             // コマンド補完表示の色
@@ -909,7 +975,7 @@ impl Rsh {
                     execute!(stdout, Print("\n")).unwrap();
 
                     // 入力を実行可能な形式に分割
-                    let args = self.rsh_split_line(self.buffer.clone());
+                    let args = self.rsh_split_line(self.buffer.buffer.clone());
 
                     // 実行可能なコマンド一覧を取得
                     self.get_executable_commands();
@@ -924,7 +990,7 @@ impl Rsh {
                         self.exists_rshenv = false;
                     }
 
-                    self.buffer = String::new();
+                    self.buffer.buffer = String::new();
                     // 分割したコマンドを実行
                     match self.rsh_execute(args) {
                         Ok(status) => match status {
@@ -949,7 +1015,7 @@ impl Rsh {
     pub fn new() -> Self {
         Self {
             prompt: String::new(),
-            buffer: String::new(),
+            buffer: Buffer::new(),
             env_database: Vec::new(),
             history_database: Vec::new(),
             command_database: Vec::new(),
