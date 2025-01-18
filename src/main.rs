@@ -33,6 +33,7 @@ use std::env;
 use std::ffi::CString;
 use std::fs;
 use std::io::{stdout, Write};
+use unicode_segmentation::UnicodeSegmentation;
 use whoami::username;
 
 struct Prompt {
@@ -88,14 +89,12 @@ enum Mode {
 
 struct Buffer {
     buffer: String,
-    multi_byte: Vec<bool>,
 }
 
 impl Buffer {
     pub fn new() -> Self {
         Self {
             buffer: String::new(),
-            multi_byte: Vec::new(),
         }
     }
 }
@@ -111,6 +110,7 @@ struct Rsh {
     exists_rshenv: bool,
     now_mode: Mode,
     cursor_x: usize,
+    char_count: usize,
 }
 
 impl Rsh {
@@ -787,22 +787,14 @@ impl Rsh {
                                 KeyCode::Char(' ') => {
                                     // TABの直後にSpaceが入力された場合
                                     self.buffer.buffer.insert(self.cursor_x, ' ');
-                                    self.buffer.multi_byte.insert(self.cursor_x, false);
                                     pushed_tab = false;
                                     self.cursor_x += 1;
                                 }
                                 _ => {
                                     self.buffer.buffer = match code {
                                         KeyCode::Backspace => {
-                                            println!(
-                                                "remove: {:?}, {:?}, {}",
-                                                self.buffer.buffer.chars().collect::<Vec<char>>(),
-                                                self.buffer.multi_byte,
-                                                self.cursor_x
-                                            );
-                                            stdout.flush().unwrap();
                                             // カーソルがバッファの範囲内にある場合
-                                            if self.cursor_x <= self.buffer.buffer.len()
+                                            if self.char_count <= self.buffer.buffer.len()
                                                 && self.cursor_x > 0
                                             {
                                                 // 要素を削除
@@ -811,50 +803,29 @@ impl Rsh {
                                                     .buffer
                                                     .is_char_boundary(self.cursor_x - 1)
                                                 {
-                                                    // それ以外
                                                     self.buffer.buffer.remove(self.cursor_x - 1);
-                                                    self.buffer
-                                                        .multi_byte
-                                                        .remove(self.cursor_x - 1);
-                                                    self.cursor_x -= 1;
                                                 } else {
-                                                    /*
-                                                                                                        // 今フォーカスしている文字列がマルチバイト文字かどうか判定する必要がある
-                                                                                                        // self.buffer.multi_byte[index]で特定の文字がマルチバイト文字かどうかを判定する
-                                                                                                        // フォーカスしている文字列がマルチバイト文字の場合適切な長さを余分にマイナスする
-                                                                                                        // 今フォーカスしている文字がマルチバイト配列の何要素目かを取得し、その要素をbufferから削除する
-
-                                                                                                        //  マルチバイト文字の場合
-                                                                                                        // 文字列を切り出して削除し再定義
-                                                                                                        let mut buffer_chars = self
-                                                                                                            .buffer
-                                                                                                            .buffer
-                                                                                                            .chars()
-                                                                                                            .collect::<Vec<char>>();
-                                                                                                        buffer_chars.remove(self.cursor_x / 3 - 1);
-                                                                                                        self.buffer.buffer =
-                                                                                                            buffer_chars.into_iter().collect();
-                                                                                                        self.buffer
-                                                                                                            .multi_byte
-                                                                                                            .remove(self.cursor_x / 3 - 1);
-                                                                                                        self.cursor_x -= 2;
-                                                                                                        isnt_ascii_counter -= 1;
-                                                    */
+                                                    // それ以外
+                                                    let mut buffer_graphemes = self
+                                                        .buffer
+                                                        .buffer
+                                                        .graphemes(true)
+                                                        .collect::<Vec<&str>>();
+                                                    buffer_graphemes.remove(self.char_count - 1);
+                                                    stdout.flush().unwrap();
+                                                    self.buffer.buffer = buffer_graphemes.concat();
+                                                    isnt_ascii_counter -= 1;
+                                                    self.cursor_x -= 2;
                                                 }
+                                                self.cursor_x -= 1;
+                                                self.char_count -= 1;
                                             }
                                             self.buffer.buffer.clone()
                                         }
                                         KeyCode::Char(c) => {
+                                            self.char_count += 1;
                                             if c.is_ascii() {
-                                                if self.cursor_x >= self.buffer.buffer.len() {
-                                                    self.buffer.buffer.push(c);
-                                                    self.buffer.multi_byte.push(false);
-                                                } else {
-                                                    self.buffer.buffer.insert(self.cursor_x, c);
-                                                    self.buffer
-                                                        .multi_byte
-                                                        .insert(self.cursor_x, false);
-                                                }
+                                                self.buffer.buffer.insert(self.cursor_x, c);
                                                 self.cursor_x += 1;
                                             } else {
                                                 let mut buf = [0; 4];
@@ -864,13 +835,6 @@ impl Rsh {
                                                     self.cursor_x += c_str.len();
                                                     // 全角文字の場合は文字のとる幅から余分な文を減らすためカウンタを増やす
                                                     isnt_ascii_counter += 1;
-                                                }
-                                                if self.cursor_x >= self.buffer.buffer.len() {
-                                                    self.buffer.multi_byte.push(true);
-                                                } else {
-                                                    self.buffer
-                                                        .multi_byte
-                                                        .insert(self.cursor_x, true);
                                                 }
                                             }
                                             self.buffer.buffer.clone()
@@ -1023,6 +987,7 @@ impl Rsh {
             exists_rshenv: false,
             now_mode: Mode::Nomal,
             cursor_x: 0,
+            char_count: 0,
         }
     }
 }
