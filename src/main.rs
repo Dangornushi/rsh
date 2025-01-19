@@ -650,16 +650,24 @@ impl Rsh {
                     KeyCode::Char('l') => {
                         // 相対移動
                         // Bufferの文字列内でカーソルを移動させるため
-                        if self.cursor_x < self.buffer.buffer.len() {
-                            execute!(stdout, MoveRight(1)).unwrap();
-                            stdout.flush().unwrap();
+                        if self.char_count < self.buffer.buffer.chars().count() {
                             if direction == "left" {
                                 range_string.pop();
                             } else {
                                 range_string
-                                    .push(self.buffer.buffer.chars().nth(self.cursor_x).unwrap());
+                                    .push(self.buffer.buffer.chars().nth(self.char_count).unwrap());
                             }
-                            self.cursor_x += 1;
+                            let char_len = self
+                                .buffer
+                                .buffer
+                                .chars()
+                                .nth(self.char_count)
+                                .unwrap()
+                                .len_utf8()
+                                - 1;
+                            self.cursor_x += char_len + 1;
+                            self.char_count += 1;
+                            execute!(stdout, MoveRight(char_len as u16)).unwrap();
                         }
                     }
                     KeyCode::Char('i') => {
@@ -806,11 +814,6 @@ impl Rsh {
                                 _ => {
                                     self.buffer.buffer = match code {
                                         KeyCode::Backspace => {
-                                            /*
-                                            println!(
-                                                "\n{:?}, cursor_x: {}, char_count{}",
-                                                self.buffer.buffer, self.cursor_x, self.char_count
-                                            );*/
                                             // カーソルがバッファの範囲内にある場合
                                             if self.char_count <= self.buffer.buffer.len()
                                                 && self.cursor_x > 0
