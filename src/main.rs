@@ -558,6 +558,7 @@ impl Rsh {
         // 初期値
         if self.now_mode == Mode::Nomal {
             self.cursor_x = self.buffer.buffer.len();
+            self.char_count = self.buffer.buffer.chars().count();
         }
 
         enable_raw_mode().unwrap();
@@ -677,20 +678,18 @@ impl Rsh {
                         self.now_mode = Mode::Nomal;
                         break;
                     }
-                    _ => {
-                        //if self.match_input(&mut stdout, code) {
-                        //break;
-                        //}
-                    }
+                    _ => {}
                 }
                 std::io::stdout().flush().unwrap();
             }
         }
         disable_raw_mode().unwrap();
-        if direction == "left" {
-            range_string = range_string.chars().rev().collect();
-        }
-        //println!("\n{}", range_string);
+        /*
+                if direction == "left" {
+                    range_string = range_string.chars().rev().collect();
+                }
+                println!("\n{}", range_string);
+        */
         stdout.flush().unwrap();
     }
 
