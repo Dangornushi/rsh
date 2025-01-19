@@ -673,6 +673,7 @@ impl Rsh {
                         }
                         self.buffer.buffer = self.get_string_at_cursor(start_pos);
                         self.cursor_x = self.buffer.buffer.len();
+                        self.char_count = self.buffer.buffer.chars().count();
                         self.now_mode = Mode::Nomal;
                         break;
                     }
@@ -706,6 +707,7 @@ impl Rsh {
         let _ = execute!(stdout, MoveTo(0, 0), Clear(ClearType::All));
 
         self.cursor_x = self.buffer.buffer.len();
+        self.char_count = self.buffer.buffer.chars().count();
 
         let mut isnt_ascii_counter = 0;
 
@@ -779,6 +781,7 @@ impl Rsh {
                                     }
 
                                     self.cursor_x = self.buffer.buffer.len();
+                                    self.char_count = self.buffer.buffer.chars().count();
 
                                     pushed_tab = true;
                                     tab_counter += 1;
@@ -789,10 +792,15 @@ impl Rsh {
                                     self.buffer.buffer.insert(self.cursor_x, ' ');
                                     pushed_tab = false;
                                     self.cursor_x += 1;
+                                    self.char_count += 1;
                                 }
                                 _ => {
                                     self.buffer.buffer = match code {
                                         KeyCode::Backspace => {
+                                            println!(
+                                                "\n{:?}, cursor_x: {}, char_count{}",
+                                                self.buffer.buffer, self.cursor_x, self.char_count
+                                            );
                                             // カーソルがバッファの範囲内にある場合
                                             if self.char_count <= self.buffer.buffer.len()
                                                 && self.cursor_x > 0
@@ -817,6 +825,11 @@ impl Rsh {
                                                     isnt_ascii_counter -= 1;
                                                     self.cursor_x -= 2;
                                                 }
+                                                // cursor_xはマルチバイト文字がある場合マルチバイト文字の数 *3 + 普通の文字数 = char_countになる
+                                                // git commit -m "fix: 日本語 まで入力して削除しようとすると計算が合わなくなる
+                                                // char_count と　cursor_xの釣り合いが取れない
+                                                // cursor_xがきちんとマイナスされていない？
+                                                // char_countがきちんとプラスされていない？
                                                 self.cursor_x -= 1;
                                                 self.char_count -= 1;
                                             }
@@ -930,6 +943,7 @@ impl Rsh {
                     disable_raw_mode().unwrap();
 
                     self.cursor_x = 0;
+                    self.char_count = 0;
                     self.set_prompt_color("#ECE1B4".to_string())?;
                     execute!(stdout, MoveToColumn(0)).unwrap();
 
