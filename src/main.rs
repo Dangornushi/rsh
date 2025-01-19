@@ -626,17 +626,25 @@ impl Rsh {
                     KeyCode::Char('h') => {
                         // 相対移動
                         // Bufferの文字列内でカーソルを移動させるため
-                        if self.cursor_x > 0 {
-                            execute!(stdout, MoveLeft(1)).unwrap();
-                            stdout.flush().unwrap();
+                        if self.char_count > 0 {
                             if direction == "right" {
                                 range_string.pop();
                             } else {
                                 range_string.push(
-                                    self.buffer.buffer.chars().nth(self.cursor_x - 1).unwrap(),
+                                    self.buffer.buffer.chars().nth(self.char_count - 1).unwrap(),
                                 );
                             }
-                            self.cursor_x -= 1;
+                            let char_len = self
+                                .buffer
+                                .buffer
+                                .chars()
+                                .nth(self.char_count - 1)
+                                .unwrap()
+                                .len_utf8()
+                                - 1;
+                            self.cursor_x -= char_len + 1;
+                            self.char_count -= 1;
+                            execute!(stdout, MoveLeft(char_len as u16)).unwrap();
                         }
                     }
                     KeyCode::Char('l') => {
@@ -741,7 +749,7 @@ impl Rsh {
                         // カーソルを指定の位置にずらす(Nomalモードで移動があった場合表示はここで更新される)
                         let mut count = 0;
                         for (i, c) in self.buffer.buffer.chars().enumerate() {
-                            if i > self.cursor_x {
+                            if i > self.char_count {
                                 break;
                             }
                             count += 1;
@@ -750,13 +758,7 @@ impl Rsh {
                             }
                         }
                         execute!(stdout, MoveToColumn((prompt.len() + count) as u16)).unwrap();
-                        /*
-                                                println!(
-                                                    "\n{:?}, cursor_x: {}, char_count{}",
-                                                    self.buffer.buffer, self.cursor_x, self.char_count
-                                                );
-                                                stdout.flush().unwrap();
-                        */
+
                         // キー入力の取得
                         if let Event::Key(KeyEvent {
                             code,
