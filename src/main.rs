@@ -708,8 +708,6 @@ impl Rsh {
         self.cursor_x = self.buffer.buffer.len();
         self.char_count = self.buffer.buffer.chars().count();
 
-        let mut isnt_ascii_counter = 0;
-
         loop {
             enable_raw_mode().unwrap();
 
@@ -729,7 +727,7 @@ impl Rsh {
                 }
                 Mode::Input => {
                     // カーソルを指定の位置にずらす(Nomalモードで移動があった場合表示はここで更新される)
-                    execute!(stdout, MoveToColumn((prompt.len() + self.cursor_x) as u16)).unwrap();
+                    //execute!(stdout, MoveToColumn((prompt.len() + self.cursor_x) as u16)).unwrap();
 
                     // 入力を取得
                     let mut pushed_tab = false;
@@ -741,14 +739,24 @@ impl Rsh {
                     loop {
                         self.get_directory_contents("./");
                         // カーソルを指定の位置にずらす(Nomalモードで移動があった場合表示はここで更新される)
-                        execute!(
-                            stdout,
-                            MoveToColumn(
-                                (prompt.len() + self.cursor_x - isnt_ascii_counter) as u16
-                            )
-                        )
-                        .unwrap();
-
+                        let mut count = 0;
+                        for (i, c) in self.buffer.buffer.chars().enumerate() {
+                            if i > self.cursor_x {
+                                break;
+                            }
+                            count += 1;
+                            if !c.is_ascii() {
+                                count += 1;
+                            }
+                        }
+                        execute!(stdout, MoveToColumn((prompt.len() + count) as u16)).unwrap();
+                        /*
+                                                println!(
+                                                    "\n{:?}, cursor_x: {}, char_count{}",
+                                                    self.buffer.buffer, self.cursor_x, self.char_count
+                                                );
+                                                stdout.flush().unwrap();
+                        */
                         // キー入力の取得
                         if let Event::Key(KeyEvent {
                             code,
@@ -796,10 +804,11 @@ impl Rsh {
                                 _ => {
                                     self.buffer.buffer = match code {
                                         KeyCode::Backspace => {
+                                            /*
                                             println!(
                                                 "\n{:?}, cursor_x: {}, char_count{}",
                                                 self.buffer.buffer, self.cursor_x, self.char_count
-                                            );
+                                            );*/
                                             // カーソルがバッファの範囲内にある場合
                                             if self.char_count <= self.buffer.buffer.len()
                                                 && self.cursor_x > 0
@@ -819,9 +828,8 @@ impl Rsh {
                                                         .graphemes(true)
                                                         .collect::<Vec<&str>>();
                                                     buffer_graphemes.remove(self.char_count - 1);
-                                                    stdout.flush().unwrap();
                                                     self.buffer.buffer = buffer_graphemes.concat();
-                                                    isnt_ascii_counter -= 1;
+                                                    //isnt_ascii_counter -= 1;
                                                     self.cursor_x -= 2;
                                                 }
                                                 // cursor_xはマルチバイト文字がある場合マルチバイト文字の数 *3 + 普通の文字数 = char_countになる
@@ -846,7 +854,7 @@ impl Rsh {
                                                     self.buffer.buffer.insert(self.cursor_x, ch);
                                                     self.cursor_x += c_str.len();
                                                     // 全角文字の場合は文字のとる幅から余分な文を減らすためカウンタを増やす
-                                                    isnt_ascii_counter += 1;
+                                                    //isnt_ascii_counter += 1;
                                                 }
                                             }
                                             self.buffer.buffer.clone()
