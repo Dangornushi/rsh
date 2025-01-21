@@ -538,10 +538,10 @@ impl Rsh {
             .chars()
             .enumerate()
             .filter(|(i, _)| {
-                if start_pos < self.cursor_x {
-                    *i < start_pos || *i > self.cursor_x
+                if start_pos < self.char_count {
+                    *i < start_pos || *i > self.char_count
                 } else {
-                    *i < self.cursor_x || *i > start_pos
+                    *i < self.char_count || *i > start_pos
                 }
             })
             .map(|(_, c)| c)
@@ -551,7 +551,7 @@ impl Rsh {
     pub fn rsh_move_cursor(&mut self, prompt: Prompt) {
         let mut stdout = stdout();
         let mut range_string = String::new();
-        let start_pos = self.cursor_x;
+        let start_pos = self.char_count;
         // 範囲選択がどの方向に進んでいるか
         let mut direction: &str = "left";
 
@@ -563,9 +563,9 @@ impl Rsh {
 
         enable_raw_mode().unwrap();
         loop {
-            if start_pos > self.cursor_x {
+            if start_pos > self.char_count {
                 direction = "left";
-            } else if start_pos <= self.cursor_x {
+            } else if start_pos <= self.char_count {
                 direction = "right";
             }
             // デザイン部分
@@ -573,33 +573,42 @@ impl Rsh {
                 //選択されている部分
                 if direction == "left" {
                     // self.cursor_x..start_pos => 選択している範囲
-                    for pos in self.cursor_x..self.buffer.buffer.len() {
-                        execute!(
-                            stdout,
-                            MoveToColumn((prompt.len() + pos) as u16),
-                            if pos <= start_pos {
-                                SetBackgroundColor(Color::Blue)
-                            } else {
-                                SetBackgroundColor(Color::Reset)
-                            },
-                            Print(self.buffer.buffer.chars().nth(pos).unwrap()),
-                        )
-                        .unwrap();
+                    for pos in self.char_count..self.buffer.buffer.chars().count() {
+                        let ch = self.buffer.buffer.chars().nth(pos).unwrap();
+                        let ch_len = ch.len_utf8();
+                        for i in 0..ch_len {
+                            execute!(
+                                stdout,
+                                MoveToColumn((prompt.len() + pos + i) as u16),
+                                if pos <= start_pos {
+                                    SetBackgroundColor(Color::Blue)
+                                } else {
+                                    SetBackgroundColor(Color::Reset)
+                                },
+                                Print(ch),
+                            )
+                            .unwrap();
+                        }
                     }
                 } else {
-                    for pos in start_pos..self.buffer.buffer.len() {
-                        execute!(
-                            stdout,
-                            MoveToColumn((prompt.len() + pos) as u16),
-                            if pos <= self.cursor_x {
-                                SetBackgroundColor(Color::Blue)
-                            } else {
-                                SetBackgroundColor(Color::Reset)
-                            },
-                            Print(self.buffer.buffer.chars().nth(pos).unwrap()),
-                        )
-                        .unwrap();
-                    }
+                    for pos in start_pos..self.buffer.buffer.chars().count() {
+                        let ch = self.buffer.buffer.chars().nth(pos).unwrap();
+                        let ch_len = ch.len_utf8();
+                        for i in 0..ch_len {
+                            execute!(
+                                stdout,
+                                MoveToColumn((prompt.len() + pos + i) as u16),
+                                if pos <= self.char_count {
+                                    SetBackgroundColor(Color::Blue)
+                                } else {
+                                    SetBackgroundColor(Color::Reset)
+                                },
+                                Print(ch),
+                                MoveRight(1),
+                            )
+                            .unwrap();
+                        }
+                    } /**/
                 }
                 // 選択されていない部分
                 execute!(
@@ -680,6 +689,8 @@ impl Rsh {
                     }
                     KeyCode::Char('d') => {
                         // 選択された文字列を削除
+
+                        /*
                         if direction == "left" {
                             range_string = range_string.chars().rev().collect();
                         }
@@ -687,7 +698,7 @@ impl Rsh {
                             execute!(stdout, MoveLeft(1)).unwrap();
                             execute!(stdout, Print(" ")).unwrap();
                             execute!(stdout, MoveLeft(1)).unwrap();
-                        }
+                        }*/
                         self.buffer.buffer = self.get_string_at_cursor(start_pos);
                         self.cursor_x = self.buffer.buffer.len();
                         self.char_count = self.buffer.buffer.chars().count();
@@ -757,7 +768,7 @@ impl Rsh {
                         // カーソルを指定の位置にずらす(Nomalモードで移動があった場合表示はここで更新される)
                         let mut count = 0;
                         for (i, c) in self.buffer.buffer.chars().enumerate() {
-                            if i > self.char_count {
+                            if i >= self.char_count {
                                 break;
                             }
                             count += 1;
