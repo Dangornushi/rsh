@@ -101,7 +101,7 @@ impl Buffer {
 
 #[derive()]
 struct Rsh {
-    prompt: String,
+    prompt: Prompt,
     buffer: Buffer,
     env_database: Vec<String>,
     history_database: Vec<History>,
@@ -548,17 +548,37 @@ impl Rsh {
             .collect()
     }
 
-    pub fn rsh_move_cursor(&mut self, prompt: Prompt) {
+    fn initializations_cursor_value(&mut self) {
+        self.cursor_x = self.buffer.buffer.len();
+        self.char_count = self.buffer.buffer.chars().count();
+    }
+
+    fn initializations_cursor_view(&mut self, stdout: &mut std::io::Stdout) {
+        // カーソルを行の最後尾に移動
+        let mut count = 0;
+        for (i, c) in self.buffer.buffer.chars().enumerate() {
+            if i >= self.char_count {
+                break;
+            }
+            count += 1;
+            if !c.is_ascii() {
+                count += 1;
+            }
+        }
+        execute!(stdout, MoveToColumn((self.prompt.len() + count) as u16)).unwrap();
+    }
+
+    pub fn rsh_move_cursor(&mut self) {
         let mut stdout = stdout();
         let mut range_string = String::new();
         let start_pos = self.char_count;
+        let start_cursor_x = self.cursor_x;
         // 範囲選択がどの方向に進んでいるか
-        let mut direction: &str = "left";
+        let mut direction: &str = "";
 
         // 初期値
         if self.now_mode == Mode::Nomal {
-            self.cursor_x = self.buffer.buffer.len();
-            self.char_count = self.buffer.buffer.chars().count();
+            //self.initializations_cursor_value();
         }
 
         enable_raw_mode().unwrap();
@@ -568,55 +588,53 @@ impl Rsh {
             } else if start_pos <= self.char_count {
                 direction = "right";
             }
+            self.initializations_cursor_view(&mut stdout);
             // デザイン部分
+
             if self.now_mode == Mode::Visual {
+                //選択されている部分
+
                 //選択されている部分
                 if direction == "left" {
                     // self.cursor_x..start_pos => 選択している範囲
-                    for pos in self.char_count..self.buffer.buffer.chars().count() {
-                        let ch = self.buffer.buffer.chars().nth(pos).unwrap();
-                        let ch_len = ch.len_utf8();
-                        for i in 0..ch_len {
-                            execute!(
-                                stdout,
-                                MoveToColumn((prompt.len() + pos + i) as u16),
-                                if pos <= start_pos {
-                                    SetBackgroundColor(Color::Blue)
-                                } else {
-                                    SetBackgroundColor(Color::Reset)
-                                },
-                                Print(ch),
-                            )
-                            .unwrap();
-                        }
+                    for pos in self.cursor_x..self.buffer.buffer.len() {
+                        execute!(
+                            stdout,
+                            MoveToColumn((self.prompt.len() + pos) as u16),
+                            if pos <= start_pos {
+                                SetBackgroundColor(Color::Blue)
+                            } else {
+                                SetBackgroundColor(Color::Reset)
+                            },
+                            Print(self.buffer.buffer.chars().nth(pos).unwrap()),
+                        )
+                        .unwrap();
                     }
                 } else {
-                    for pos in start_pos..self.buffer.buffer.chars().count() {
-                        let ch = self.buffer.buffer.chars().nth(pos).unwrap();
-                        let ch_len = ch.len_utf8();
-                        for i in 0..ch_len {
-                            execute!(
-                                stdout,
-                                MoveToColumn((prompt.len() + pos + i) as u16),
-                                if pos <= self.char_count {
-                                    SetBackgroundColor(Color::Blue)
-                                } else {
-                                    SetBackgroundColor(Color::Reset)
-                                },
-                                Print(ch),
-                                MoveRight(1),
-                            )
-                            .unwrap();
-                        }
-                    } /**/
+                    for (pos, c) in self.buffer.buffer.chars().enumerate().skip(start_pos) {
+                        execute!(
+                            stdout,
+                            MoveToColumn((self.prompt.len() + start_pos + pos) as u16),
+                            if pos < self.char_count {
+                                SetBackgroundColor(Color::Blue)
+                            } else {
+                                SetBackgroundColor(Color::Reset)
+                            },
+                            Print(c),
+                            //MoveRight()
+                        )
+                        .unwrap();
+                    }
                 }
                 // 選択されていない部分
                 execute!(
                     stdout,
                     SetBackgroundColor(Color::Reset),
-                    MoveToColumn((prompt.len() + self.cursor_x) as u16)
+                    MoveToColumn((self.prompt.len() + self.cursor_x) as u16)
                 )
                 .unwrap();
+                /*
+                 */
             }
 
             if let Event::Key(KeyEvent {
@@ -746,15 +764,21 @@ impl Rsh {
                 self.now_mode,
             );
 
+            self.prompt = prompt;
+
             self.rsh_print(self.buffer.buffer.clone());
 
             match self.now_mode {
                 Mode::Nomal => {
-                    self.rsh_move_cursor(prompt);
+                    self.rsh_move_cursor();
                 }
                 Mode::Input => {
                     // カーソルを指定の位置にずらす(Nomalモードで移動があった場合表示はここで更新される)
-                    //execute!(stdout, MoveToColumn((prompt.len() + self.cursor_x) as u16)).unwrap();
+                    execute!(
+                        stdout,
+                        MoveToColumn((self.prompt.len() + self.cursor_x) as u16)
+                    )
+                    .unwrap();
 
                     // 入力を取得
                     let mut pushed_tab = false;
@@ -765,18 +789,7 @@ impl Rsh {
 
                     loop {
                         self.get_directory_contents("./");
-                        // カーソルを指定の位置にずらす(Nomalモードで移動があった場合表示はここで更新される)
-                        let mut count = 0;
-                        for (i, c) in self.buffer.buffer.chars().enumerate() {
-                            if i >= self.char_count {
-                                break;
-                            }
-                            count += 1;
-                            if !c.is_ascii() {
-                                count += 1;
-                            }
-                        }
-                        execute!(stdout, MoveToColumn((prompt.len() + count) as u16)).unwrap();
+                        self.initializations_cursor_view(&mut stdout);
 
                         // キー入力の取得
                         if let Event::Key(KeyEvent {
@@ -814,7 +827,11 @@ impl Rsh {
                                     pushed_tab = true;
                                     tab_counter += 1;
                                 }
-                                KeyCode::Enter => break,
+                                KeyCode::Enter => {
+                                    self.cursor_x = 0;
+                                    self.char_count = 0;
+                                    break;
+                                }
                                 KeyCode::Char(' ') => {
                                     // TABの直後にSpaceが入力された場合
                                     self.buffer.buffer.insert(self.cursor_x, ' ');
@@ -965,8 +982,8 @@ impl Rsh {
 
                     disable_raw_mode().unwrap();
 
-                    self.cursor_x = 0;
-                    self.char_count = 0;
+                    //self.cursor_x = 0;
+                    //self.char_count = 0;
                     self.set_prompt_color("#ECE1B4".to_string())?;
                     execute!(stdout, MoveToColumn(0)).unwrap();
 
@@ -1003,7 +1020,7 @@ impl Rsh {
                 }
 
                 Mode::Visual => {
-                    self.rsh_move_cursor(prompt);
+                    self.rsh_move_cursor();
                     if self.now_mode != Mode::Visual {
                         continue;
                     }
@@ -1015,7 +1032,7 @@ impl Rsh {
 
     pub fn new() -> Self {
         Self {
-            prompt: String::new(),
+            prompt: Prompt::new(username(), vec!["".to_string()], 0, Mode::Nomal),
             buffer: Buffer::new(),
             env_database: Vec::new(),
             history_database: Vec::new(),
