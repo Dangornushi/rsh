@@ -6,8 +6,8 @@ use crate::log::log_maneger::csv_reader;
 use crate::log::log_maneger::csv_writer;
 use crate::log::log_maneger::History;
 use colored::Colorize;
-use crossterm::cursor::MoveRight;
-use crossterm::cursor::MoveTo;
+use crossterm::cursor::DisableBlinking;
+use crossterm::cursor::{MoveRight, MoveTo, SetCursorStyle};
 use crossterm::event::read;
 use crossterm::event::KeyEvent;
 use crossterm::{
@@ -591,9 +591,8 @@ impl Rsh {
             self.initializations_cursor_view(&mut stdout);
             // デザイン部分
 
+            /*
             if self.now_mode == Mode::Visual {
-                //選択されている部分
-
                 //選択されている部分
                 if direction == "left" {
                     // self.cursor_x..start_pos => 選択している範囲
@@ -610,18 +609,31 @@ impl Rsh {
                         )
                         .unwrap();
                     }
-                } else {
                     for (pos, c) in self.buffer.buffer.chars().enumerate().skip(start_pos) {
+                        //MoveToColumn((self.prompt.len() + start_pos + pos - 1) as u16),
                         execute!(
                             stdout,
-                            MoveToColumn((self.prompt.len() + start_pos + pos) as u16),
-                            if pos < self.char_count {
+                            if pos == start_pos {
                                 SetBackgroundColor(Color::Blue)
                             } else {
                                 SetBackgroundColor(Color::Reset)
                             },
-                            Print(c),
-                            //MoveRight()
+                            MoveRight(1)
+                        )
+                        .unwrap();
+                    }
+                } else {
+                    execute!(stdout, MoveToColumn((self.prompt.len() + start_pos) as u16)).unwrap();
+                    for pos in start_pos..self.char_count {
+                        execute!(
+                            stdout,
+                            if pos <= self.char_count {
+                                SetBackgroundColor(Color::Blue)
+                            } else {
+                                SetBackgroundColor(Color::Reset)
+                            },
+                            MoveRight(2),
+                            //Print(self.buffer.buffer.chars().nth(pos).unwrap()),
                         )
                         .unwrap();
                     }
@@ -633,10 +645,10 @@ impl Rsh {
                     MoveToColumn((self.prompt.len() + self.cursor_x) as u16)
                 )
                 .unwrap();
-                /*
-                 */
             }
+                    */
 
+            // キー入力の取得
             if let Event::Key(KeyEvent {
                 code,
                 modifiers: _,
@@ -654,13 +666,6 @@ impl Rsh {
                         // 相対移動
                         // Bufferの文字列内でカーソルを移動させるため
                         if self.char_count > 0 {
-                            if direction == "right" {
-                                range_string.pop();
-                            } else {
-                                range_string.push(
-                                    self.buffer.buffer.chars().nth(self.char_count - 1).unwrap(),
-                                );
-                            }
                             let char_len = self
                                 .buffer
                                 .buffer
@@ -669,9 +674,27 @@ impl Rsh {
                                 .unwrap()
                                 .len_utf8()
                                 - 1;
+                            if direction == "right" {
+                                range_string.pop();
+                                // 間違いなくこちらのIfに入っているがなぜか色が変わらない
+                                for pos in 0..self.buffer.buffer.chars().count() {
+                                    execute!(stdout, SetBackgroundColor(Color::White), MoveLeft(1))
+                                        .unwrap();
+                                }
+                                execute!(
+                                    stdout,
+                                    MoveLeft(char_len as u16),
+                                    SetBackgroundColor(Color::Reset)
+                                )
+                                .unwrap();
+                            } else {
+                                range_string.push(
+                                    self.buffer.buffer.chars().nth(self.char_count - 1).unwrap(),
+                                );
+                                execute!(stdout, MoveLeft(char_len as u16)).unwrap();
+                            }
                             self.cursor_x -= char_len + 1;
                             self.char_count -= 1;
-                            execute!(stdout, MoveLeft(char_len as u16)).unwrap();
                         }
                     }
                     KeyCode::Char('l') => {
@@ -729,12 +752,6 @@ impl Rsh {
             }
         }
         disable_raw_mode().unwrap();
-        /*
-                if direction == "left" {
-                    range_string = range_string.chars().rev().collect();
-                }
-                println!("\n{}", range_string);
-        */
         stdout.flush().unwrap();
     }
 
@@ -1020,7 +1037,9 @@ impl Rsh {
                 }
 
                 Mode::Visual => {
+                    execute!(stdout, SetCursorStyle::BlinkingUnderScore).unwrap();
                     self.rsh_move_cursor();
+                    execute!(stdout, SetCursorStyle::DefaultUserShape).unwrap();
                     if self.now_mode != Mode::Visual {
                         continue;
                     }
