@@ -684,7 +684,7 @@ impl Rsh {
                                 execute!(
                                     stdout,
                                     MoveLeft(char_len as u16),
-                                    SetBackgroundColor(Color::Reset)
+                                    //SetBackgroundColor(Color::Reset)
                                 )
                                 .unwrap();
                             } else {
