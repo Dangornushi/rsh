@@ -572,9 +572,10 @@ impl Rsh {
         let mut stdout = stdout();
         let mut range_string = String::new();
         let start_pos = self.char_count;
-        let start_cursor_x = self.cursor_x;
+        //let start_cursor_x = self.cursor_x;
         // 範囲選択がどの方向に進んでいるか
         let mut direction: &str = "";
+        let mut direction_set = false;
 
         // 初期値
         if self.now_mode == Mode::Nomal {
@@ -583,10 +584,13 @@ impl Rsh {
 
         enable_raw_mode().unwrap();
         loop {
-            if start_pos > self.char_count {
-                direction = "left";
-            } else if start_pos <= self.char_count {
-                direction = "right";
+            if !direction_set {
+                direction_set = true;
+                if start_pos >= self.char_count {
+                    direction = "left";
+                } else if start_pos < self.char_count {
+                    direction = "right";
+                }
             }
             self.initializations_cursor_view(&mut stdout);
             // デザイン部分
@@ -675,22 +679,38 @@ impl Rsh {
                                 .len_utf8()
                                 - 1;
                             if direction == "right" {
-                                range_string.pop();
-                                // 間違いなくこちらのIfに入っているがなぜか色が変わらない
-                                for pos in 0..self.buffer.buffer.chars().count() {
-                                    execute!(stdout, SetBackgroundColor(Color::White), MoveLeft(1))
+                                // 今までl押下で右側にカーソルを動かしていたが、今はhをおしている
+                                // start_posまで戻った際はdirectionをleftに変更する
+                                if range_string.len() == 0 {
+                                    direction = "left";
+                                } else {
+                                    for pos in start_pos..self.char_count {
+                                        execute!(
+                                            stdout,
+                                            MoveToColumn((self.prompt.len() + pos) as u16),
+                                            SetBackgroundColor(Color::Reset),
+                                            Print(self.buffer.buffer.chars().nth(pos).unwrap()),
+                                        )
                                         .unwrap();
+                                    }
+                                    range_string.pop();
+                                    //      execute!(stdout, MoveLeft(char_len as u16),).unwrap();
                                 }
-                                execute!(
-                                    stdout,
-                                    MoveLeft(char_len as u16),
-                                    //SetBackgroundColor(Color::Reset)
-                                )
-                                .unwrap();
-                            } else {
+                            }
+                            if direction == "left" {
+                                // h押下で左側にカーソルを動かしている
                                 range_string.push(
                                     self.buffer.buffer.chars().nth(self.char_count - 1).unwrap(),
                                 );
+                                for pos in self.char_count..start_pos {
+                                    execute!(
+                                        stdout,
+                                        MoveToColumn((self.prompt.len() + pos) as u16),
+                                        SetBackgroundColor(Color::Blue),
+                                        Print(self.buffer.buffer.chars().nth(pos).unwrap()),
+                                    )
+                                    .unwrap();
+                                }
                                 execute!(stdout, MoveLeft(char_len as u16)).unwrap();
                             }
                             self.cursor_x -= char_len + 1;
@@ -703,6 +723,15 @@ impl Rsh {
                         if self.char_count < self.buffer.buffer.chars().count() {
                             if direction == "left" {
                                 range_string.pop();
+                                for pos in self.char_count..start_pos {
+                                    execute!(
+                                        stdout,
+                                        MoveToColumn((self.prompt.len() + pos) as u16),
+                                        SetBackgroundColor(Color::Reset),
+                                        Print(self.buffer.buffer.chars().nth(pos).unwrap()),
+                                    )
+                                    .unwrap();
+                                }
                             } else {
                                 range_string
                                     .push(self.buffer.buffer.chars().nth(self.char_count).unwrap());
