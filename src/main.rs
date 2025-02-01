@@ -583,74 +583,19 @@ impl Rsh {
         }
 
         enable_raw_mode().unwrap();
+
         loop {
             if !direction_set {
-                direction_set = true;
-                if start_pos >= self.char_count {
+                if start_pos > self.char_count {
+                    direction_set = true;
                     direction = "left";
                 } else if start_pos < self.char_count {
+                    direction_set = true;
                     direction = "right";
                 }
             }
             self.initializations_cursor_view(&mut stdout);
             // デザイン部分
-
-            /*
-            if self.now_mode == Mode::Visual {
-                //選択されている部分
-                if direction == "left" {
-                    // self.cursor_x..start_pos => 選択している範囲
-                    for pos in self.cursor_x..self.buffer.buffer.len() {
-                        execute!(
-                            stdout,
-                            MoveToColumn((self.prompt.len() + pos) as u16),
-                            if pos <= start_pos {
-                                SetBackgroundColor(Color::Blue)
-                            } else {
-                                SetBackgroundColor(Color::Reset)
-                            },
-                            Print(self.buffer.buffer.chars().nth(pos).unwrap()),
-                        )
-                        .unwrap();
-                    }
-                    for (pos, c) in self.buffer.buffer.chars().enumerate().skip(start_pos) {
-                        //MoveToColumn((self.prompt.len() + start_pos + pos - 1) as u16),
-                        execute!(
-                            stdout,
-                            if pos == start_pos {
-                                SetBackgroundColor(Color::Blue)
-                            } else {
-                                SetBackgroundColor(Color::Reset)
-                            },
-                            MoveRight(1)
-                        )
-                        .unwrap();
-                    }
-                } else {
-                    execute!(stdout, MoveToColumn((self.prompt.len() + start_pos) as u16)).unwrap();
-                    for pos in start_pos..self.char_count {
-                        execute!(
-                            stdout,
-                            if pos <= self.char_count {
-                                SetBackgroundColor(Color::Blue)
-                            } else {
-                                SetBackgroundColor(Color::Reset)
-                            },
-                            MoveRight(2),
-                            //Print(self.buffer.buffer.chars().nth(pos).unwrap()),
-                        )
-                        .unwrap();
-                    }
-                }
-                // 選択されていない部分
-                execute!(
-                    stdout,
-                    SetBackgroundColor(Color::Reset),
-                    MoveToColumn((self.prompt.len() + self.cursor_x) as u16)
-                )
-                .unwrap();
-            }
-                    */
 
             // キー入力の取得
             if let Event::Key(KeyEvent {
@@ -681,6 +626,8 @@ impl Rsh {
                             if direction == "right" {
                                 // 今までl押下で右側にカーソルを動かしていたが、今はhをおしている
                                 // start_posまで戻った際はdirectionをleftに変更する
+                                range_string.pop();
+                                /*
                                 if range_string.len() == 0 {
                                     direction = "left";
                                 } else {
@@ -693,24 +640,35 @@ impl Rsh {
                                         )
                                         .unwrap();
                                     }
-                                    range_string.pop();
                                     //      execute!(stdout, MoveLeft(char_len as u16),).unwrap();
-                                }
+                                }*/
                             }
                             if direction == "left" {
                                 // h押下で左側にカーソルを動かしている
                                 range_string.push(
                                     self.buffer.buffer.chars().nth(self.char_count - 1).unwrap(),
                                 );
-                                for pos in self.char_count..start_pos {
-                                    execute!(
-                                        stdout,
-                                        MoveToColumn((self.prompt.len() + pos) as u16),
-                                        SetBackgroundColor(Color::Blue),
-                                        Print(self.buffer.buffer.chars().nth(pos).unwrap()),
-                                    )
-                                    .unwrap();
-                                }
+                                /*
+                                if self.now_mode == Mode::Visual {
+                                    for pos in self.char_count - 1..start_pos + 1 {
+                                        if start_pos - 1 < pos {
+                                            execute!(
+                                                stdout,
+                                                MoveToColumn((self.prompt.len() + pos) as u16),
+                                                SetBackgroundColor(Color::Reset),
+                                            )
+                                            .unwrap();
+                                        } else {
+                                            execute!(
+                                                stdout,
+                                                MoveToColumn((self.prompt.len() + pos) as u16),
+                                                SetBackgroundColor(Color::Blue),
+                                                Print(self.buffer.buffer.chars().nth(pos).unwrap())
+                                            )
+                                            .unwrap();
+                                        }
+                                    }
+                                }*/
                                 execute!(stdout, MoveLeft(char_len as u16)).unwrap();
                             }
                             self.cursor_x -= char_len + 1;
@@ -721,21 +679,6 @@ impl Rsh {
                         // 相対移動
                         // Bufferの文字列内でカーソルを移動させるため
                         if self.char_count < self.buffer.buffer.chars().count() {
-                            if direction == "left" {
-                                range_string.pop();
-                                for pos in self.char_count..start_pos {
-                                    execute!(
-                                        stdout,
-                                        MoveToColumn((self.prompt.len() + pos) as u16),
-                                        SetBackgroundColor(Color::Reset),
-                                        Print(self.buffer.buffer.chars().nth(pos).unwrap()),
-                                    )
-                                    .unwrap();
-                                }
-                            } else {
-                                range_string
-                                    .push(self.buffer.buffer.chars().nth(self.char_count).unwrap());
-                            }
                             let char_len = self
                                 .buffer
                                 .buffer
@@ -744,6 +687,64 @@ impl Rsh {
                                 .unwrap()
                                 .len_utf8()
                                 - 1;
+                            if direction == "left" {
+                                // l押下でカーソルを右側に動かしている
+                                /*
+                                if self.now_mode == Mode::Visual {
+
+                                    execute!(
+                                        stdout,
+                                        MoveToColumn((self.prompt.len() + self.char_count) as u16),
+                                        SetBackgroundColor(Color::Reset),
+                                        Print(
+                                            self.buffer
+                                                .buffer
+                                                .chars()
+                                                .nth(self.char_count)
+                                                .unwrap()
+                                        ),
+                                    )
+                                    .unwrap();
+                                    for pos in self.char_count + 1..start_pos {
+                                        execute!(
+                                            stdout,
+                                            MoveToColumn((self.prompt.len() + pos) as u16),
+                                            SetBackgroundColor(Color::Blue),
+                                            Print(self.buffer.buffer.chars().nth(pos).unwrap()),
+                                        )
+                                        .unwrap();
+                                    }
+                                }
+                                */
+                                range_string.pop();
+                            }
+                            if direction == "right" {
+                                // 今までh押下で左側にカーソルを動かしていたが、今はlをおしている
+                                /*
+                                if self.now_mode == Mode::Visual {
+                                    for pos in start_pos..self.buffer.buffer.chars().count() {
+                                        if pos < self.char_count {
+                                            execute!(
+                                                stdout,
+                                                MoveToColumn((self.prompt.len() + pos) as u16),
+                                                SetBackgroundColor(Color::Blue),
+                                            )
+                                            .unwrap();
+                                        } else {
+                                            /**/
+                                            execute!(
+                                                stdout,
+                                                MoveToColumn((self.prompt.len() + pos) as u16),
+                                                SetBackgroundColor(Color::Reset),
+                                            )
+                                            .unwrap();
+                                        }
+                                    }
+                                }
+                                */
+                                range_string
+                                    .push(self.buffer.buffer.chars().nth(self.char_count).unwrap());
+                            }
                             self.cursor_x += char_len + 1;
                             self.char_count += 1;
                             execute!(stdout, MoveRight(char_len as u16)).unwrap();
