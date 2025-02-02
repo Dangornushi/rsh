@@ -1066,6 +1066,7 @@ impl Rsh {
 
                     // Inputモードから離脱
                     if self.now_mode != Mode::Input {
+                        self.move_cursor_left(&mut stdout, "left", &mut String::new());
                         continue;
                     }
                     execute!(stdout, Print("\n")).unwrap();
