@@ -1,6 +1,7 @@
 mod command;
 mod error;
 mod log;
+mod parser;
 
 use crate::log::log_maneger::csv_reader;
 use crate::log::log_maneger::csv_writer;
@@ -44,7 +45,6 @@ impl Prompt {
             Mode::Nomal => "N",
             Mode::Input => "I",
             Mode::Visual => "V",
-            _ => "Else",
         };
 
         Self {
@@ -233,7 +233,6 @@ impl Rsh {
             Mode::Nomal => "N",
             Mode::Input => "I",
             Mode::Visual => "V",
-            _ => "Else",
         }
     }
 
@@ -471,6 +470,7 @@ impl Rsh {
     }
 
     fn rsh_execute(&mut self, args: Vec<String>) -> Result<Status, RshError> {
+        parser::parse::Parse::parse_expr(args.join(" ").as_str());
         if let Option::Some(arg) = args.get(0) {
             let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
             let path = self.open_profile(".rsh_history")?;
@@ -852,7 +852,6 @@ impl Rsh {
                     let mut pushed_tab = false;
                     let mut stack_buffer = String::new();
                     let mut tab_counter = 0;
-                    let mut esc_pressed = false;
 
                     enable_raw_mode().unwrap();
 
@@ -871,7 +870,6 @@ impl Rsh {
                             match code {
                                 KeyCode::Esc => {
                                     self.now_mode = Mode::Nomal;
-                                    esc_pressed = true;
                                     break;
                                 }
                                 KeyCode::Tab => {
@@ -968,13 +966,6 @@ impl Rsh {
                             }
                         }
 
-                        // Inputモードから離脱
-                        if self.now_mode != Mode::Input {
-                            if self.char_count > 0 {
-                                self.move_cursor_left(&mut stdout, "left", &mut String::new());
-                            }
-                            continue;
-                        }
                         // コマンド実行履歴の中からbufferで始まるものを取得
                         let history_matches: Vec<String> = self
                             .history_database
@@ -1057,19 +1048,19 @@ impl Rsh {
                         }
                     }
 
-                    disable_raw_mode().unwrap();
+                    // Inputモードから離脱
+                    if self.now_mode != Mode::Input {
+                        if self.char_count > 0 {
+                            self.move_cursor_left(&mut stdout, "left", &mut String::new());
+                        }
+                        continue;
+                    }
 
+                    disable_raw_mode().unwrap();
                     //self.cursor_x = 0;
                     //self.char_count = 0;
                     self.set_prompt_color("#ECE1B4".to_string())?;
-                    execute!(stdout, MoveToColumn(0)).unwrap();
-
-                    // Inputモードから離脱
-                    if self.now_mode != Mode::Input {
-                        self.move_cursor_left(&mut stdout, "left", &mut String::new());
-                        continue;
-                    }
-                    execute!(stdout, Print("\n")).unwrap();
+                    execute!(stdout, MoveToColumn(0), Print("\n")).unwrap();
 
                     // 入力を実行可能な形式に分割
                     let args = self.rsh_split_line(self.buffer.buffer.clone());
@@ -1105,7 +1096,6 @@ impl Rsh {
                         continue;
                     }
                 }
-                _ => {}
             }
         }
     }
