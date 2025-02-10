@@ -470,7 +470,10 @@ impl Rsh {
     }
 
     fn rsh_execute(&mut self, args: Vec<String>) -> Result<Status, RshError> {
-        parser::parse::Parse::parse_expr(args.join(" ").as_str());
+        println!(
+            "{:?}",
+            parser::parse::Parse::parse_expr(args.join(" ").as_str())
+        );
         if let Option::Some(arg) = args.get(0) {
             let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
             let path = self.open_profile(".rsh_history")?;
