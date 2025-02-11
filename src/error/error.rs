@@ -11,7 +11,7 @@ impl RshError {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Status {
     Success,
     Exit,

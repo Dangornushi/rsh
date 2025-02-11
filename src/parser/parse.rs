@@ -1,25 +1,23 @@
 use nom::branch::{alt, permutation};
-use nom::bytes::complete::{is_not, tag};
-use nom::character::complete::{alpha0, multispace0};
-use nom::character::streaming::multispace1;
+use nom::bytes::complete::tag;
+use nom::character::complete::multispace0;
 use nom::combinator::{map, opt};
-use nom::multi::{many0, many1};
-use nom::sequence::delimited;
+use nom::multi::many1;
 use nom::IResult;
 
 /// 任意の式を表す
 #[derive(Debug, PartialEq, Clone)]
-pub enum Expr {
-    Expression(Box<Expr>),
+pub enum Node {
+    Expression(Box<Node>),
     CompoundStatement(CompoundStatement),
     Command(Box<Command>),
     Identifier(Identifier),
 }
-impl Expr {
+impl Node {
     /// 式を評価する
-    pub fn eval(&self) -> Vec<Expr> {
+    pub fn eval(&self) -> Vec<Node> {
         match self {
-            Expr::CompoundStatement(compound_statement) => compound_statement.eval(),
+            Node::CompoundStatement(compound_statement) => compound_statement.eval(),
             _ => vec![],
         }
     }
@@ -27,47 +25,48 @@ impl Expr {
 #[derive(Debug, PartialEq, Clone)]
 struct Expression {
     // 式の集合
-    expr: Expr,
+    node: Node,
 }
 impl Expression {
     /// 生成する
-    pub fn new(val: Expr) -> Expression {
-        Expression { expr: val }
+    pub fn new(val: Node) -> Expression {
+        Expression { node: val }
     }
 }
 
+// コマンド達の連結を表す
 #[derive(Debug, PartialEq, Clone)]
-struct CompoundStatement {
-    stmt: Vec<Expr>,
+pub struct CompoundStatement {
+    stmt: Vec<Node>,
 }
 impl CompoundStatement {
     /// 生成する
-    pub fn new(val: Vec<Expr>) -> CompoundStatement {
+    pub fn new(val: Vec<Node>) -> CompoundStatement {
         CompoundStatement { stmt: val }
     }
 
     /// 生成する
-    pub fn from(val: Expr) -> CompoundStatement {
+    pub fn from(val: Node) -> CompoundStatement {
         CompoundStatement {
             stmt: Vec::from([val]),
         }
     }
 
     /// 生成する
-    pub fn start_node(val: Expr, val2: Vec<Expr>) -> CompoundStatement {
+    pub fn start_node(val: Node, val2: Vec<Node>) -> CompoundStatement {
         let mut v = val2.clone();
         v.insert(0, val.clone());
         CompoundStatement { stmt: v }
     }
-    pub fn eval(&self) -> Vec<Expr> {
+    pub fn eval(&self) -> Vec<Node> {
         self.stmt.clone()
     }
 }
 // コマンドを表す
 #[derive(Debug, PartialEq, Clone)]
-pub struct Command(Expr, Expr);
+pub struct Command(Node, Node);
 impl Command {
-    pub fn new(val: Expr, val2: Expr) -> Command {
+    pub fn new(val: Node, val2: Node) -> Command {
         Command(val, val2)
     }
 }
@@ -90,7 +89,7 @@ impl Identifier {
 pub struct Parse {}
 
 impl Parse {
-    fn parse_constant(input: &str) -> IResult<&str, Expr> {
+    fn parse_constant(input: &str) -> IResult<&str, Node> {
         let (no_used, parsed) = nom::character::complete::alphanumeric1::<
             &str,
             nom::error::VerboseError<&str>,
@@ -101,21 +100,21 @@ impl Parse {
         .map_err(|err| nom::Err::Error((input, nom::error::ErrorKind::MapRes)))?;
         Ok((
             no_used,
-            Expr::Identifier(Identifier::new(parsed.to_string())),
+            Node::Identifier(Identifier::new(parsed.to_string())),
         ))
     }
 
-    fn parse_identifier(input: &str) -> IResult<&str, Expr> {
+    fn parse_identifier(input: &str) -> IResult<&str, Node> {
         //let (no_used, parsed) = nom::bytes::complete::take_until(";")(input)?;
         let (no_used, parsed) = nom::bytes::complete::is_not(";")(input)?;
 
         Ok((
             no_used,
-            Expr::Identifier(Identifier::new(parsed.to_string())),
+            Node::Identifier(Identifier::new(parsed.to_string())),
         ))
     }
 
-    fn parse_command(input: &str) -> IResult<&str, Expr> {
+    fn parse_command(input: &str) -> IResult<&str, Node> {
         let (no_used, parsed) = map(
             permutation((
                 Self::parse_constant,
@@ -123,11 +122,11 @@ impl Parse {
             )),
             |(command, opttion)| {
                 if let Some((_, sub_command)) = opttion {
-                    Expr::Command(Box::new(Command::new(command, sub_command)))
+                    Node::Command(Box::new(Command::new(command, sub_command)))
                 } else {
-                    Expr::Command(Box::new(Command::new(
+                    Node::Command(Box::new(Command::new(
                         command,
-                        Expr::Identifier(Identifier::new("".to_string())),
+                        Node::Identifier(Identifier::new("".to_string())),
                     )))
                 }
             },
@@ -136,12 +135,12 @@ impl Parse {
         Ok((no_used, parsed))
     }
 
-    fn parse_statement(input: &str) -> IResult<&str, Expr> {
+    fn parse_statement(input: &str) -> IResult<&str, Node> {
         let (no_used, parsed) = Self::parse_command(input)?;
         Ok((no_used, parsed))
     }
 
-    fn parse_compound_statement(input: &str) -> IResult<&str, Expr> {
+    fn parse_compound_statement(input: &str) -> IResult<&str, Node> {
         let (no_used, parsed) = map(
             many1(permutation((
                 multispace0,
@@ -154,13 +153,13 @@ impl Parse {
                 for statement in compound_statements {
                     cmpnd_stmts.push(statement.1);
                 }
-                Expr::CompoundStatement(CompoundStatement::new(cmpnd_stmts))
+                Node::CompoundStatement(CompoundStatement::new(cmpnd_stmts))
             },
         )(input)?;
         Ok((no_used, parsed))
     }
 
-    pub fn parse_expr(input: &str) -> IResult<&str, Expr> {
+    pub fn parse_node(input: &str) -> IResult<&str, Node> {
         let (no_used, parsed) = alt((
             Self::parse_compound_statement,
             Self::parse_compound_statement,
@@ -175,32 +174,32 @@ mod tests {
     #[test]
     fn test_parse_command() {
         let input = "echo         hello";
-        let expected = Expr::Command(Box::new(Command(
-            Expr::Identifier(Identifier::new("echo".to_string())),
-            Expr::Identifier(Identifier::new("hello".to_string())),
+        let expected = Node::Command(Box::new(Command(
+            Node::Identifier(Identifier::new("echo".to_string())),
+            Node::Identifier(Identifier::new("hello".to_string())),
         )));
         let result = Parse::parse_command(input);
         assert_eq!(result, Ok(("", expected)));
         let input = "echo \"だんごむし\"";
-        let expected = Expr::Command(Box::new(Command(
-            Expr::Identifier(Identifier::new("echo".to_string())),
-            Expr::Identifier(Identifier::new("\"だんごむし\"".to_string())),
+        let expected = Node::Command(Box::new(Command(
+            Node::Identifier(Identifier::new("echo".to_string())),
+            Node::Identifier(Identifier::new("\"だんごむし\"".to_string())),
         )));
         let result = Parse::parse_command(input);
         assert_eq!(result, Ok(("", expected)));
 
         let input = "echo hello";
-        let expected = Expr::Command(Box::new(Command(
-            Expr::Identifier(Identifier::new("echo".to_string())),
-            Expr::Identifier(Identifier::new("hello".to_string())),
+        let expected = Node::Command(Box::new(Command(
+            Node::Identifier(Identifier::new("echo".to_string())),
+            Node::Identifier(Identifier::new("hello".to_string())),
         )));
         let result = Parse::parse_command(input);
         assert_eq!(result, Ok(("", expected)));
 
         let input = "echo";
-        let expected = Expr::Command(Box::new(Command(
-            Expr::Identifier(Identifier::new("echo".to_string())),
-            Expr::Identifier(Identifier::new("".to_string())),
+        let expected = Node::Command(Box::new(Command(
+            Node::Identifier(Identifier::new("echo".to_string())),
+            Node::Identifier(Identifier::new("".to_string())),
         )));
         let result = Parse::parse_command(input);
         assert_eq!(result, Ok(("", expected)));
@@ -209,28 +208,28 @@ mod tests {
     #[test]
     fn parse_compound_statement() {
         let input = "echo \"aaaa\"; echo \"だんごむし\"";
-        let expected = Expr::CompoundStatement(CompoundStatement::new(vec![
-            Expr::Command(Box::new(Command(
-                Expr::Identifier(Identifier::new("echo".to_string())),
-                Expr::Identifier(Identifier::new("\"aaaa\"".to_string())),
+        let expected = Node::CompoundStatement(CompoundStatement::new(vec![
+            Node::Command(Box::new(Command(
+                Node::Identifier(Identifier::new("echo".to_string())),
+                Node::Identifier(Identifier::new("\"aaaa\"".to_string())),
             ))),
-            Expr::Command(Box::new(Command(
-                Expr::Identifier(Identifier::new("echo".to_string())),
-                Expr::Identifier(Identifier::new("\"だんごむし\"".to_string())),
+            Node::Command(Box::new(Command(
+                Node::Identifier(Identifier::new("echo".to_string())),
+                Node::Identifier(Identifier::new("\"だんごむし\"".to_string())),
             ))),
         ]));
 
         let result = Parse::parse_compound_statement(input);
         assert_eq!(result, Ok(("", expected)));
         let input = "echo hello; echo world";
-        let expected = Expr::CompoundStatement(CompoundStatement::new(vec![
-            Expr::Command(Box::new(Command(
-                Expr::Identifier(Identifier::new("echo".to_string())),
-                Expr::Identifier(Identifier::new("hello".to_string())),
+        let expected = Node::CompoundStatement(CompoundStatement::new(vec![
+            Node::Command(Box::new(Command(
+                Node::Identifier(Identifier::new("echo".to_string())),
+                Node::Identifier(Identifier::new("hello".to_string())),
             ))),
-            Expr::Command(Box::new(Command(
-                Expr::Identifier(Identifier::new("echo".to_string())),
-                Expr::Identifier(Identifier::new("world".to_string())),
+            Node::Command(Box::new(Command(
+                Node::Identifier(Identifier::new("echo".to_string())),
+                Node::Identifier(Identifier::new("world".to_string())),
             ))),
         ]));
         let result = Parse::parse_compound_statement(input);

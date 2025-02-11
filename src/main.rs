@@ -1,8 +1,10 @@
 mod command;
 mod error;
+mod evaluator;
 mod log;
 mod parser;
 
+use crate::evaluator::evaluator::Evaluator;
 use crate::log::log_maneger::csv_reader;
 use crate::log::log_maneger::csv_writer;
 use crate::log::log_maneger::History;
@@ -461,8 +463,8 @@ impl Rsh {
                     .collect();
 
                 execvp(&path, &c_args)
-                    .map(|_| Status::Success)
-                    .map_err(|_| RshError::new(&format!("{} is not found", args[0])))
+                    .map_err(|_| RshError::new(&format!("{} is not found", args[0])))?;
+                Ok(Status::Success)
 
                 // -------------
             }
@@ -560,7 +562,9 @@ impl Rsh {
                 count += 1;
             }
         }
-        execute!(stdout, MoveToColumn((self.prompt.len() + count) as u16)).unwrap();
+        if let Err(e) = execute!(stdout, MoveToColumn((self.prompt.len() + count) as u16)) {
+            self.eprintln(&format!("Failed to move cursor: {}", e));
+        }
     }
     pub fn move_cursor_left(
         &mut self,
@@ -1061,13 +1065,23 @@ impl Rsh {
                     self.set_prompt_color("#ECE1B4".to_string())?;
                     execute!(stdout, MoveToColumn(0), Print("\n")).unwrap();
 
+                    let parsed = parser::parse::Parse::parse_node(&self.buffer.buffer).clone();
+
+                    // ASTの評価
+                    if let Ok((_, node)) = parsed {
+                        let _ = Evaluator::evaluate(&evaluator::evaluator::Evaluator, node)
+                            .map_err(|e| {
+                                self.eprintln(&format!(
+                                    "Failed to parse input, Error: {}",
+                                    e.message
+                                ))
+                            });
+                    } else {
+                        self.eprintln("Failed to parse input");
+                    }
+
                     // 入力を実行可能な形式に分割
                     let args = self.rsh_split_line(self.buffer.buffer.clone());
-
-                    println!(
-                        "{:?}",
-                        parser::parse::Parse::parse_expr(&self.buffer.buffer.clone())
-                    );
 
                     // 実行可能なコマンド一覧を取得
                     self.get_executable_commands();
