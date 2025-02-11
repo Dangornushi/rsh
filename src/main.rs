@@ -470,10 +470,6 @@ impl Rsh {
     }
 
     fn rsh_execute(&mut self, args: Vec<String>) -> Result<Status, RshError> {
-        println!(
-            "{:?}",
-            parser::parse::Parse::parse_expr(args.join(" ").as_str())
-        );
         if let Option::Some(arg) = args.get(0) {
             let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
             let path = self.open_profile(".rsh_history")?;
@@ -1067,6 +1063,11 @@ impl Rsh {
 
                     // 入力を実行可能な形式に分割
                     let args = self.rsh_split_line(self.buffer.buffer.clone());
+
+                    println!(
+                        "{:?}",
+                        parser::parse::Parse::parse_expr(&self.buffer.buffer.clone())
+                    );
 
                     // 実行可能なコマンド一覧を取得
                     self.get_executable_commands();
