@@ -1,4 +1,4 @@
-use crate::{RshError, Status};
+use crate::error::error::{RshError, Status};
 use nix::unistd::*;
 use std::path::Path;
 

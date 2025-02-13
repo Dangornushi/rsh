@@ -1,5 +1,4 @@
-use crate::{log::log_maneger::History, RshError};
-
+use crate::{error::error::RshError, log::log_maneger::History};
 
 pub fn rsh_history(database: Vec<History>) -> Result<(), RshError> {
     for (_, history) in database.iter().enumerate() {

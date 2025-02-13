@@ -18,6 +18,7 @@ impl Node {
     pub fn eval(&self) -> Vec<Node> {
         match self {
             Node::CompoundStatement(compound_statement) => compound_statement.eval(),
+            Node::Command(command) => command.0.eval(),
             _ => vec![],
         }
     }
@@ -62,12 +63,20 @@ impl CompoundStatement {
         self.stmt.clone()
     }
 }
+
 // コマンドを表す
 #[derive(Debug, PartialEq, Clone)]
 pub struct Command(Node, Node);
 impl Command {
     pub fn new(val: Node, val2: Node) -> Command {
         Command(val, val2)
+    }
+    pub fn get_command(&self) -> Node {
+        self.0.clone()
+    }
+
+    pub fn get_sub_command(&self) -> Node {
+        self.1.clone()
     }
 }
 

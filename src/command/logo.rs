@@ -1,4 +1,4 @@
-use crate::{RshError, Status};
+use crate::error::error::{RshError, Status};
 
 pub fn rsh_logo() -> Result<Status, RshError> {
     println!("                                    ...................");
