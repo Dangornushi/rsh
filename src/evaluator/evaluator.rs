@@ -25,8 +25,8 @@ impl Evaluator {
         };
         let sub_command = expr.get_sub_command();
         println!("Command: {:?}, {:?}", command, sub_command);
-        let args = vec![command, sub_command];
-        let execution = Rsh::new().rsh_execute(args);
+        //let args = vec![command, sub_command];
+        //let execution = Rsh::new().rsh_execute(args);
     }
 
     fn eval_compound_statement(&self, expr: CompoundStatement) {

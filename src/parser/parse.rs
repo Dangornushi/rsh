@@ -1,6 +1,6 @@
 use nom::branch::{alt, permutation};
 use nom::bytes::complete::tag;
-use nom::character::complete::multispace0;
+use nom::character::complete::{alpha1, multispace0};
 use nom::combinator::{map, opt};
 use nom::multi::many1;
 use nom::IResult;
@@ -10,6 +10,7 @@ use nom::IResult;
 pub enum Node {
     Expression(Box<Node>),
     CompoundStatement(CompoundStatement),
+    Statement(Statement),
     Command(Box<Command>),
     Identifier(Identifier),
 }
@@ -64,18 +65,32 @@ impl CompoundStatement {
     }
 }
 
+#[derive(Debug, PartialEq, Clone)]
+pub struct Statement(Vec<Node>);
+impl Statement {
+    pub fn new(val: Vec<Node>) -> Statement {
+        Statement(val)
+    }
+    pub fn from(val: Node) -> Statement {
+        Statement(Vec::from([val]))
+    }
+    pub fn eval(&self) -> Vec<Node> {
+        self.0.clone()
+    }
+}
+
 // コマンドを表す
 #[derive(Debug, PartialEq, Clone)]
-pub struct Command(Node, Node);
+pub struct Command(Node, Vec<Node>);
 impl Command {
-    pub fn new(val: Node, val2: Node) -> Command {
+    pub fn new(val: Node, val2: Vec<Node>) -> Command {
         Command(val, val2)
     }
     pub fn get_command(&self) -> Node {
         self.0.clone()
     }
 
-    pub fn get_sub_command(&self) -> Node {
+    pub fn get_sub_command(&self) -> Vec<Node> {
         self.1.clone()
     }
 }
@@ -98,15 +113,15 @@ impl Identifier {
 pub struct Parse {}
 
 impl Parse {
+    fn parse_alphanumeric_multibyte(input: &str) -> IResult<&str, Node> {
+        let (no_used, parsed) = alpha1(input)?;
+        Ok((
+            no_used,
+            Node::Identifier(Identifier::new(parsed.to_string())),
+        ))
+    }
     fn parse_constant(input: &str) -> IResult<&str, Node> {
-        let (no_used, parsed) = nom::character::complete::alphanumeric1::<
-            &str,
-            nom::error::VerboseError<&str>,
-        >(input)
-        .or_else(|_: nom::Err<nom::error::VerboseError<&str>>| {
-            nom::character::complete::multispace1::<&str, nom::error::VerboseError<&str>>(input)
-        })
-        .map_err(|err| nom::Err::Error((input, nom::error::ErrorKind::MapRes)))?;
+        let (no_used, parsed) = nom::bytes::complete::is_not(" ;")(input)?;
         Ok((
             no_used,
             Node::Identifier(Identifier::new(parsed.to_string())),
@@ -127,16 +142,25 @@ impl Parse {
         let (no_used, parsed) = map(
             permutation((
                 Self::parse_constant,
-                opt(permutation((multispace0, Self::parse_identifier))),
+                opt(many1(permutation((
+                    multispace0,
+                    alt((
+                        //Self::parse_constant,   // 数字・アルファベット
+                        Self::parse_constant,
+                        Self::parse_identifier, // "に囲まれている文字列
+                        Self::parse_alphanumeric_multibyte,
+                    )),
+                )))),
             )),
-            |(command, opttion)| {
-                if let Some((_, sub_command)) = opttion {
-                    Node::Command(Box::new(Command::new(command, sub_command)))
+            |(command, opttions)| {
+                if let Some(options) = opttions {
+                    let mut v: Vec<Node> = Vec::new();
+                    for opt in options {
+                        v.push(opt.1.clone());
+                    }
+                    Node::Command(Box::new(Command::new(command, v)))
                 } else {
-                    Node::Command(Box::new(Command::new(
-                        command,
-                        Node::Identifier(Identifier::new("".to_string())),
-                    )))
+                    Node::Command(Box::new(Command::new(command, Vec::new())))
                 }
             },
         )(input)?;
