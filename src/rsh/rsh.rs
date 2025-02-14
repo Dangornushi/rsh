@@ -473,9 +473,9 @@ impl Rsh {
             let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
             let path = self.open_profile(".rsh_history")?;
 
-            csv_writer(args.join(" "), time, &path)
-                .map_err(|_| RshError::new("Failed to write history"))?;
-            return match arg.as_str() {
+            let _ = csv_writer(args.join(" "), time, &path);
+
+            if let Ok(r) = match arg.as_str() {
                 // cd: ディレクトリ移動の組み込みコマンド
                 "cd" =>
                 match
@@ -502,9 +502,15 @@ impl Rsh {
                 "exit" => command::exit::rsh_exit(),
                 // none: 何もなければコマンド実行
                 _ => self.rsh_launch(args),
-            };
+            } {
+                return Ok(r);
+            } else {
+                self.eprintln("Failed to execute command");
+                return Err(RshError::new("Failed to execute command"));
+            }
+        } else {
+            return Ok(Status::Success);
         }
-        Ok(Status::Success)
     }
 
     pub fn rsh_print(&self, buffer: String) {
@@ -1062,6 +1068,22 @@ impl Rsh {
                     self.set_prompt_color("#ECE1B4".to_string())?;
                     execute!(stdout, MoveToColumn(0), Print("\n")).unwrap();
 
+                    // 実行可能なコマンド一覧を取得
+                    self.get_executable_commands();
+
+                    // 履歴ファイルが存在するか？
+                    if let Err(err) = self.get_rshhistory_contents() {
+                        self.eprintln(&format!("Error: {}", err.message));
+                    }
+                    // 環境変数ファイルが存在するか？
+                    if let Err(_) = self.get_rshenv_contents() {
+                        //self.eprintln(&format!("Error: {}", err.message));
+                        self.exists_rshenv = false;
+                    }
+
+                    // 入力を実行可能な形式に分割
+                    let args = self.rsh_split_line(self.buffer.buffer.clone());
+
                     let parsed = Parse::parse_node(&self.buffer.buffer).clone();
 
                     // ASTの評価
@@ -1077,31 +1099,7 @@ impl Rsh {
                         self.eprintln("Failed to parse input");
                     }
 
-                    // 入力を実行可能な形式に分割
-                    let args = self.rsh_split_line(self.buffer.buffer.clone());
-
-                    // 実行可能なコマンド一覧を取得
-                    self.get_executable_commands();
-
-                    // 履歴ファイルが存在するか？
-                    if let Err(err) = self.get_rshhistory_contents() {
-                        self.eprintln(&format!("Error: {}", err.message));
-                    }
-                    // 環境変数ファイルが存在するか？
-                    if let Err(_) = self.get_rshenv_contents() {
-                        //self.eprintln(&format!("Error: {}", err.message));
-                        self.exists_rshenv = false;
-                    }
-
                     self.buffer.buffer = String::new();
-                    // 分割したコマンドを実行
-                    match self.rsh_execute(args) {
-                        Ok(status) => match status {
-                            Status::Success => continue,
-                            exit @ Status::Exit => return Ok(exit),
-                        },
-                        err @ Err(_) => return err,
-                    };
                 }
 
                 Mode::Visual => {

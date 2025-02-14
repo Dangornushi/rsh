@@ -130,7 +130,11 @@ impl Parse {
 
     fn parse_identifier(input: &str) -> IResult<&str, Node> {
         //let (no_used, parsed) = nom::bytes::complete::take_until(";")(input)?;
-        let (no_used, parsed) = nom::bytes::complete::is_not(";")(input)?;
+        let (no_used, parsed) =
+            nom::sequence::delimited(tag("\""), nom::bytes::complete::is_not("\""), tag("\""))(
+                input,
+            )?;
+        let parsed = &parsed[1..parsed.len() - 1];
 
         Ok((
             no_used,
@@ -146,7 +150,6 @@ impl Parse {
                     multispace0,
                     alt((
                         //Self::parse_constant,   // 数字・アルファベット
-                        Self::parse_constant,
                         Self::parse_identifier, // "に囲まれている文字列
                         Self::parse_alphanumeric_multibyte,
                     )),
