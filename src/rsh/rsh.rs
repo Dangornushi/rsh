@@ -496,14 +496,8 @@ impl Rsh {
                 "cd" => match command::cd::rsh_cd(if let Option::Some(dir) = args.get(1) {
                     dir
                 } else {
-                    execute!(stdout(), Print("\n")).unwrap_or_else(|err| {
-                        self.eprintln(&format!("Error: {}", err));
-                        std::process::exit(1);
-                    });
-                    std::io::stdout().flush().unwrap_or_else(|err| {
-                        self.eprintln(&format!("Error: {}", err));
-                        std::process::exit(1);
-                    });
+                    execute!(stdout(), Print("\n")).unwrap();
+                    std::io::stdout().flush().unwrap();
                     "./"
                 }) {
                     Err(err) => {
@@ -898,7 +892,7 @@ impl Rsh {
                                     break;
                                 }
                                 KeyCode::Tab => {
-                                    if (!pushed_tab) {
+                                    if !pushed_tab {
                                         // 現時点で入力されている文字のバックアップ
                                         stack_buffer = self.buffer.buffer.clone();
                                     }
