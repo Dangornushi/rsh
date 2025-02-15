@@ -2,7 +2,7 @@ use nom::branch::{alt, permutation};
 use nom::bytes::complete::tag;
 use nom::character::complete::{alpha1, multispace0};
 use nom::combinator::{map, opt};
-use nom::multi::many1;
+use nom::multi::{many0, many1};
 use nom::IResult;
 
 /// 任意の式を表す
@@ -125,7 +125,6 @@ impl Parse {
             nom::sequence::delimited(tag("\""), nom::bytes::complete::is_not("\""), tag("\""))(
                 input,
             )?;
-        let parsed = &parsed[1..parsed.len() - 1];
 
         Ok((
             no_used,
@@ -137,19 +136,19 @@ impl Parse {
         let (no_used, parsed) = map(
             permutation((
                 Self::parse_constant,
-                opt(many1(permutation((
+                many0(permutation((
                     multispace0,
                     alt((
-                        Self::parse_constant, // 数字・アルファベット
                         Self::parse_identifier, // "に囲まれている文字列
-                                              //Self::parse_alphanumeric_multibyte,
+                        Self::parse_constant,
                     )),
-                )))),
+                ))),
             )),
-            |(command, opttions)| {
-                if let Some(options) = opttions {
+            |(command, options)| {
+                if options.len() > 0 {
                     let mut v: Vec<Node> = Vec::new();
                     for opt in options {
+                        println!("{:?}", opt);
                         v.push(opt.1.clone());
                     }
                     Node::Command(Box::new(Command::new(command, v)))
