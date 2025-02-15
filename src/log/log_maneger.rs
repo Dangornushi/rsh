@@ -3,7 +3,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::io::{self, BufRead};
 
-#[derive(Clone)]
+#[derive(PartialEq, Clone)]
 
 pub struct History {
     command: String,
@@ -26,6 +26,7 @@ pub fn csv_writer(command: String, time: String, path: &str) -> std::io::Result<
     let mut file = OpenOptions::new().append(true).create(true).open(path)?;
 
     writeln!(file, "{},{}", command, time)?;
+    file.flush().unwrap();
     Ok(())
 }
 

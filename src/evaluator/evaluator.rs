@@ -1,23 +1,22 @@
 use crate::error::error::{RshError, Status};
 use crate::parser::parse::{Command, CompoundStatement, Identifier, Node};
 use crate::rsh::rsh::Rsh;
-pub struct Evaluator(Rsh);
+pub struct Evaluator {
+    rsh: Rsh,
+}
 
 impl Evaluator {
     pub fn new(rsh: Rsh) -> Self {
-        Evaluator(rsh)
+        Evaluator { rsh }
     }
 
-    fn eval_identifier(&self, expr: Identifier) {
-        println!("Identifier: {:?}", expr.eval());
+    fn eval_identifier(&self, expr: Identifier) -> String {
+        expr.eval()
     }
 
-    fn eval_command(&self, expr: Command) {
+    fn eval_command(&mut self, expr: Command) {
         let command = match expr.get_command() {
-            Node::Identifier(identifier) => {
-                self.eval_identifier(identifier.clone());
-                identifier.eval()
-            }
+            Node::Identifier(identifier) => self.eval_identifier(identifier.clone()),
             _ => {
                 // Provide a default value or handle the case where the command is not an identifier
                 Default::default() // Replace with an appropriate default value
@@ -36,10 +35,13 @@ impl Evaluator {
         full_command.extend(sub_command);
 
         // 分割したコマンドを実行
-        Rsh::new().rsh_execute(full_command);
+        if let Ok(Status::Exit) = self.rsh.rsh_execute(full_command.clone()) {
+            std::process::exit(0);
+        } else {
+        }
     }
 
-    fn eval_compound_statement(&self, expr: CompoundStatement) {
+    fn eval_compound_statement(&mut self, expr: CompoundStatement) {
         let expr = expr.eval();
         for s in expr {
             match s {
@@ -51,7 +53,7 @@ impl Evaluator {
         }
     }
 
-    pub fn evaluate(&self, ast: Node) -> Result<Status, RshError> {
+    pub fn evaluate(&mut self, ast: Node) -> Result<Status, RshError> {
         // ASTを評価
         match ast {
             Node::CompoundStatement(stmt) => {
@@ -68,7 +70,8 @@ mod tests {
 
     #[test]
     fn test_eval_compound_statement() {
-        let evaluator = Evaluator::new();
+        let rsh = Rsh::new(); // Adjust with appropriate initialization
+        let mut evaluator = Evaluator::new(rsh);
         let compound_statement = CompoundStatement::new(vec![]); // Adjust with appropriate initialization
         evaluator.eval_compound_statement(compound_statement);
         // Add assertions here to verify the expected behavior
@@ -76,7 +79,8 @@ mod tests {
 
     #[test]
     fn test_evaluate_with_compound_statement() {
-        let evaluator = Evaluator::new();
+        let rsh = Rsh::new(); // Adjust with appropriate initialization
+        let mut evaluator = Evaluator::new(rsh);
         let compound_statement = CompoundStatement::new(vec![]); // Adjust with appropriate initialization
         let ast = Node::CompoundStatement(compound_statement);
         let result = evaluator.evaluate(ast);
@@ -86,7 +90,8 @@ mod tests {
 
     #[test]
     fn test_evaluate_with_other_node() {
-        let evaluator = Evaluator::new();
+        let rsh = Rsh::new(); // Adjust with appropriate initialization
+        let mut evaluator = Evaluator::new(rsh);
         let other_node = Node::Identifier(Identifier::new("hello".to_string())); // Replace with an actual variant of Node
         let result = evaluator.evaluate(other_node);
         assert!(result.is_ok());
@@ -95,7 +100,8 @@ mod tests {
 
     #[test]
     fn test_eval_command_with_identifier() {
-        let evaluator = Evaluator::new();
+        let rsh = Rsh::new(); // Adjust with appropriate initialization
+        let mut evaluator = Evaluator::new(rsh);
         let identifier = Identifier::new("test_command".to_string());
         let command = Command::new(Node::Identifier(identifier.clone()), vec![]);
         evaluator.eval_command(command);
@@ -104,7 +110,8 @@ mod tests {
 
     #[test]
     fn test_eval_command_with_sub_commands() {
-        let evaluator = Evaluator::new();
+        let rsh = Rsh::new(); // Adjust with appropriate initialization
+        let mut evaluator = Evaluator::new(rsh);
         let identifier = Identifier::new("echo".to_string());
         let sub_identifier = Identifier::new("hello, world".to_string());
         let command = Command::new(
@@ -117,7 +124,8 @@ mod tests {
 
     #[test]
     fn test_eval_command_with_non_identifier() {
-        let evaluator = Evaluator::new();
+        let rsh = Rsh::new(); // Adjust with appropriate initialization
+        let mut evaluator = Evaluator::new(rsh);
         let non_identifier_node = Node::CompoundStatement(CompoundStatement::new(vec![])); // Replace with an actual non-identifier variant of Node
         let command = Command::new(non_identifier_node, vec![]);
         evaluator.eval_command(command);

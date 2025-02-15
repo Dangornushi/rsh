@@ -32,6 +32,7 @@ use std::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 use whoami::username;
+#[derive(PartialEq, Clone)]
 struct Prompt {
     username: String,
     pwd: String,
@@ -82,6 +83,7 @@ enum Mode {
     Input,
 }
 
+#[derive(PartialEq, Clone)]
 struct Buffer {
     buffer: String,
 }
@@ -94,7 +96,7 @@ impl Buffer {
     }
 }
 
-#[derive()]
+#[derive(PartialEq, Clone)]
 pub struct Rsh {
     prompt: Prompt,
     buffer: Buffer,
@@ -469,6 +471,20 @@ impl Rsh {
     }
 
     pub fn rsh_execute(&mut self, args: Vec<String>) -> Result<Status, RshError> {
+        // 実行可能なコマンド一覧を取得
+        self.get_executable_commands();
+
+        // 履歴ファイルが存在するか？
+        if let Err(err) = self.get_rshhistory_contents() {
+            self.eprintln(&format!("Error: {}", err.message));
+        }
+        // 環境変数ファイルが存在するか？
+        if let Err(_) = self.get_rshenv_contents() {
+            //self.eprintln(&format!("Error: {}", err.message));
+            self.exists_rshenv = false;
+        }
+
+        self.buffer.buffer = String::new();
         if let Option::Some(arg) = args.get(0) {
             let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
             let path = self.open_profile(".rsh_history")?;
@@ -477,13 +493,17 @@ impl Rsh {
 
             if let Ok(r) = match arg.as_str() {
                 // cd: ディレクトリ移動の組み込みコマンド
-                "cd" =>
-                match
-                command::cd::rsh_cd(if let Option::Some(dir) = args.get(1) {
+                "cd" => match command::cd::rsh_cd(if let Option::Some(dir) = args.get(1) {
                     dir
                 } else {
-                    execute!(stdout(), Print("\n")).unwrap();
-                    std::io::stdout().flush().unwrap();
+                    execute!(stdout(), Print("\n")).unwrap_or_else(|err| {
+                        self.eprintln(&format!("Error: {}", err));
+                        std::process::exit(1);
+                    });
+                    std::io::stdout().flush().unwrap_or_else(|err| {
+                        self.eprintln(&format!("Error: {}", err));
+                        std::process::exit(1);
+                    });
                     "./"
                 }) {
                     Err(err) => {
@@ -491,13 +511,12 @@ impl Rsh {
                         Ok(Status::Success)
                     }
                     _ => Ok(Status::Success),
-
-                }
-                ,
+                },
                 // ロゴ表示
                 "%logo" => command::logo::rsh_logo(),
                 // history: 履歴表示の組み込みコマンド
-                "%fl" => command::history::rsh_history(self.history_database.clone()).map(|_| Status::Success),
+                "%fl" => command::history::rsh_history(self.history_database.clone())
+                    .map(|_| Status::Success),
                 // exit: 終了用の組み込みコマンド
                 "exit" => command::exit::rsh_exit(),
                 // none: 何もなければコマンド実行
@@ -879,7 +898,7 @@ impl Rsh {
                                     break;
                                 }
                                 KeyCode::Tab => {
-                                    if !pushed_tab {
+                                    if (!pushed_tab) {
                                         // 現時点で入力されている文字のバックアップ
                                         stack_buffer = self.buffer.buffer.clone();
                                     }
@@ -1082,21 +1101,16 @@ impl Rsh {
                     }
 
                     // 入力を実行可能な形式に分割
-                    let args = self.rsh_split_line(self.buffer.buffer.clone());
 
                     let parsed = Parse::parse_node(&self.buffer.buffer).clone();
 
                     // ASTの評価
                     if let Ok((_, node)) = parsed {
-                        let _ = Evaluator::evaluate(&evaluator::evaluator::Evaluator, node)
-                            .map_err(|e| {
-                                self.eprintln(&format!(
-                                    "Failed to parse input, Error: {}",
-                                    e.message
-                                ))
-                            });
+                        let mut evaluator = evaluator::evaluator::Evaluator::new(self.clone());
+                        // 分割したコマンドを実行
+                        let _ = evaluator.evaluate(node);
                     } else {
-                        self.eprintln("Failed to parse input");
+                        self.eprintln(&format!("Failed to parse input"))
                     }
 
                     self.buffer.buffer = String::new();

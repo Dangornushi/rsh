@@ -111,7 +111,6 @@ impl Identifier {
 }
 
 pub struct Parse {}
-
 impl Parse {
     fn parse_alphanumeric_multibyte(input: &str) -> IResult<&str, Node> {
         let (no_used, parsed) = alpha1(input)?;
@@ -120,6 +119,7 @@ impl Parse {
             Node::Identifier(Identifier::new(parsed.to_string())),
         ))
     }
+
     fn parse_constant(input: &str) -> IResult<&str, Node> {
         let (no_used, parsed) = nom::bytes::complete::is_not(" ;")(input)?;
         Ok((
@@ -129,7 +129,6 @@ impl Parse {
     }
 
     fn parse_identifier(input: &str) -> IResult<&str, Node> {
-        //let (no_used, parsed) = nom::bytes::complete::take_until(";")(input)?;
         let (no_used, parsed) =
             nom::sequence::delimited(tag("\""), nom::bytes::complete::is_not("\""), tag("\""))(
                 input,
@@ -156,6 +155,7 @@ impl Parse {
                 )))),
             )),
             |(command, opttions)| {
+                println!("{:?}", command);
                 if let Some(options) = opttions {
                     let mut v: Vec<Node> = Vec::new();
                     for opt in options {
@@ -212,22 +212,16 @@ mod tests {
         let input = "echo         hello";
         let expected = Node::Command(Box::new(Command(
             Node::Identifier(Identifier::new("echo".to_string())),
-            Node::Identifier(Identifier::new("hello".to_string())),
+            vec![Node::Identifier(Identifier::new("hello".to_string()))],
         )));
         let result = Parse::parse_command(input);
         assert_eq!(result, Ok(("", expected)));
         let input = "echo \"だんごむし\"";
         let expected = Node::Command(Box::new(Command(
             Node::Identifier(Identifier::new("echo".to_string())),
-            Node::Identifier(Identifier::new("\"だんごむし\"".to_string())),
-        )));
-        let result = Parse::parse_command(input);
-        assert_eq!(result, Ok(("", expected)));
-
-        let input = "echo hello";
-        let expected = Node::Command(Box::new(Command(
-            Node::Identifier(Identifier::new("echo".to_string())),
-            Node::Identifier(Identifier::new("hello".to_string())),
+            vec![Node::Identifier(Identifier::new(
+                "\"だんごむし\"".to_string(),
+            ))],
         )));
         let result = Parse::parse_command(input);
         assert_eq!(result, Ok(("", expected)));
@@ -235,7 +229,7 @@ mod tests {
         let input = "echo";
         let expected = Node::Command(Box::new(Command(
             Node::Identifier(Identifier::new("echo".to_string())),
-            Node::Identifier(Identifier::new("".to_string())),
+            vec![Node::Identifier(Identifier::new("".to_string()))],
         )));
         let result = Parse::parse_command(input);
         assert_eq!(result, Ok(("", expected)));
@@ -247,11 +241,13 @@ mod tests {
         let expected = Node::CompoundStatement(CompoundStatement::new(vec![
             Node::Command(Box::new(Command(
                 Node::Identifier(Identifier::new("echo".to_string())),
-                Node::Identifier(Identifier::new("\"aaaa\"".to_string())),
+                vec![Node::Identifier(Identifier::new("\"aaaa\"".to_string()))],
             ))),
             Node::Command(Box::new(Command(
                 Node::Identifier(Identifier::new("echo".to_string())),
-                Node::Identifier(Identifier::new("\"だんごむし\"".to_string())),
+                vec![Node::Identifier(Identifier::new(
+                    "\"だんごむし\"".to_string(),
+                ))],
             ))),
         ]));
 
@@ -261,11 +257,11 @@ mod tests {
         let expected = Node::CompoundStatement(CompoundStatement::new(vec![
             Node::Command(Box::new(Command(
                 Node::Identifier(Identifier::new("echo".to_string())),
-                Node::Identifier(Identifier::new("hello".to_string())),
+                vec![Node::Identifier(Identifier::new("world".to_string()))],
             ))),
             Node::Command(Box::new(Command(
                 Node::Identifier(Identifier::new("echo".to_string())),
-                Node::Identifier(Identifier::new("world".to_string())),
+                vec![Node::Identifier(Identifier::new("world".to_string()))],
             ))),
         ]));
         let result = Parse::parse_compound_statement(input);
