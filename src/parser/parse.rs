@@ -112,14 +112,6 @@ impl Identifier {
 
 pub struct Parse {}
 impl Parse {
-    fn parse_alphanumeric_multibyte(input: &str) -> IResult<&str, Node> {
-        let (no_used, parsed) = alpha1(input)?;
-        Ok((
-            no_used,
-            Node::Identifier(Identifier::new(parsed.to_string())),
-        ))
-    }
-
     fn parse_constant(input: &str) -> IResult<&str, Node> {
         let (no_used, parsed) = nom::bytes::complete::is_not(" ;")(input)?;
         Ok((
@@ -148,14 +140,13 @@ impl Parse {
                 opt(many1(permutation((
                     multispace0,
                     alt((
-                        //Self::parse_constant,   // 数字・アルファベット
+                        Self::parse_constant, // 数字・アルファベット
                         Self::parse_identifier, // "に囲まれている文字列
-                        Self::parse_alphanumeric_multibyte,
+                                              //Self::parse_alphanumeric_multibyte,
                     )),
                 )))),
             )),
             |(command, opttions)| {
-                println!("{:?}", command);
                 if let Some(options) = opttions {
                     let mut v: Vec<Node> = Vec::new();
                     for opt in options {
@@ -196,6 +187,7 @@ impl Parse {
     }
 
     pub fn parse_node(input: &str) -> IResult<&str, Node> {
+        println!("{:?}", input);
         let (no_used, parsed) = alt((
             Self::parse_compound_statement,
             Self::parse_compound_statement,

@@ -1,11 +1,9 @@
-use crate::command;
 use crate::error::error::{RshError, Status};
 use crate::evaluator;
-use crate::evaluator::evaluator::Evaluator;
 use crate::log::log_maneger::csv_reader;
-use crate::log::log_maneger::csv_writer;
 use crate::log::log_maneger::History;
 use crate::parser::parse::Parse;
+use nix::sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal};
 
 use colored::Colorize;
 use crossterm::{
@@ -15,23 +13,13 @@ use crossterm::{
     style::{Color, Print, SetForegroundColor},
     terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType},
 };
-use nix::{
-    errno::Errno,
-    libc,
-    sys::{
-        signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal},
-        wait::*,
-    },
-    unistd::{close, execvp, fork, getpgrp, pipe, setpgid, tcsetpgrp, ForkResult},
-};
 use std::{
-    env,
-    ffi::CString,
-    fs,
+    env, fs,
     io::{stdout, Write},
 };
 use unicode_segmentation::UnicodeSegmentation;
 use whoami::username;
+
 #[derive(PartialEq, Clone)]
 struct Prompt {
     username: String,
@@ -111,7 +99,7 @@ pub struct Rsh {
 }
 
 impl Rsh {
-    fn open_profile(&self, path: &str) -> Result<String, RshError> {
+    pub fn open_profile(&self, path: &str) -> Result<String, RshError> {
         let home_dir = env::current_dir()
             .unwrap()
             .into_os_string()
@@ -124,7 +112,7 @@ impl Rsh {
          */
     }
 
-    fn eprintln(&self, message: &str) {
+    pub fn eprintln(&self, message: &str) {
         let mut stderr = std::io::stderr();
         execute!(stderr, Print(message), Print("\n"))
             .map_err(|_| RshError::new("Failed to print error message"))
@@ -191,6 +179,10 @@ impl Rsh {
         self.history_database =
             csv_reader(&history_path).map_err(|_| RshError::new("Failed to get history path"))?;
         Ok(())
+    }
+
+    pub fn get_history_database(&self) -> Vec<History> {
+        self.history_database.clone()
     }
 
     fn get_current_dir_as_vec(&self) -> Vec<String> {
@@ -372,157 +364,6 @@ impl Rsh {
                 }
                 Ok(filtered_commands[*counter].clone())
             }
-        }
-    }
-
-    fn ignore_tty_signals(&self) {
-        let sa = SigAction::new(SigHandler::SigIgn, SaFlags::empty(), SigSet::empty());
-        unsafe {
-            sigaction(Signal::SIGTSTP, &sa).unwrap();
-            sigaction(Signal::SIGTTIN, &sa).unwrap();
-            sigaction(Signal::SIGTTOU, &sa).unwrap();
-        }
-    }
-
-    fn restore_tty_signals(&self) {
-        let sa = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
-        unsafe {
-            sigaction(Signal::SIGTSTP, &sa).unwrap();
-            sigaction(Signal::SIGTTIN, &sa).unwrap();
-            sigaction(Signal::SIGTTOU, &sa).unwrap();
-        }
-    }
-
-    fn rsh_launch(&mut self, args: Vec<String>) -> Result<Status, RshError> {
-        let pid = fork().map_err(|_| RshError::new("fork failed"))?;
-        let (pipe_read, pipe_write) = pipe().unwrap();
-
-        match pid {
-            ForkResult::Parent { child } => {
-                setpgid(child, child).unwrap();
-                tcsetpgrp(0, child).unwrap();
-                close(pipe_read).unwrap();
-                close(pipe_write).unwrap();
-
-                let wait_pid_result =
-                    waitpid(child, None).map_err(|err| RshError::new(&format!("{}", err)));
-
-                tcsetpgrp(0, getpgrp()).unwrap();
-
-                match wait_pid_result {
-                    Ok(WaitStatus::Exited(_, return_code)) => {
-                        // ui
-                        self.return_code = return_code;
-                        Ok(Status::Success)
-                    }
-                    Ok(WaitStatus::Signaled(_, _, _)) => {
-                        println!("signaled");
-                        Ok(Status::Success)
-                    }
-                    Err(err) => {
-                        self.eprintln(&format!("rsh: {}", err.message));
-                        Ok(Status::Success)
-                    }
-                    _ => Ok(Status::Success),
-                }
-            }
-            ForkResult::Child => {
-                // シグナル系処理 ---------------------------
-                self.restore_tty_signals();
-
-                close(pipe_write).unwrap();
-
-                loop {
-                    let mut buf = [0];
-                    match nix::unistd::read(pipe_read, &mut buf) {
-                        Err(e) if e == nix::Error::Sys(Errno::EINTR) => (),
-                        _ => break,
-                    }
-                    unsafe {
-                        if libc::isatty(libc::STDIN_FILENO) == 1 {
-                            let mut sigset = SigSet::empty();
-                            sigset.add(Signal::SIGINT);
-                            sigset.add(Signal::SIGQUIT);
-                            sigset.add(Signal::SIGTERM);
-                            if sigset.contains(Signal::SIGINT) {
-                                libc::_exit(0);
-                            }
-                        }
-                    }
-                }
-                close(pipe_read).unwrap();
-                // ------------------------------------------
-
-                // コマンドパース
-                let path = CString::new(args[0].to_string()).unwrap();
-
-                let c_args: Vec<CString> = args
-                    .iter()
-                    .map(|s| CString::new(s.as_bytes()).unwrap())
-                    .collect();
-
-                execvp(&path, &c_args)
-                    .map_err(|_| RshError::new(&format!("{} is not found", args[0])))?;
-                Ok(Status::Success)
-
-                // -------------
-            }
-        }
-    }
-
-    pub fn rsh_execute(&mut self, args: Vec<String>) -> Result<Status, RshError> {
-        // 実行可能なコマンド一覧を取得
-        self.get_executable_commands();
-
-        // 履歴ファイルが存在するか？
-        if let Err(err) = self.get_rshhistory_contents() {
-            self.eprintln(&format!("Error: {}", err.message));
-        }
-        // 環境変数ファイルが存在するか？
-        if let Err(_) = self.get_rshenv_contents() {
-            //self.eprintln(&format!("Error: {}", err.message));
-            self.exists_rshenv = false;
-        }
-
-        self.buffer.buffer = String::new();
-        if let Option::Some(arg) = args.get(0) {
-            let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-            let path = self.open_profile(".rsh_history")?;
-
-            let _ = csv_writer(args.join(" "), time, &path);
-
-            if let Ok(r) = match arg.as_str() {
-                // cd: ディレクトリ移動の組み込みコマンド
-                "cd" => match command::cd::rsh_cd(if let Option::Some(dir) = args.get(1) {
-                    dir
-                } else {
-                    execute!(stdout(), Print("\n")).unwrap();
-                    std::io::stdout().flush().unwrap();
-                    "./"
-                }) {
-                    Err(err) => {
-                        self.eprintln(&format!("Error: {}", err.message));
-                        Ok(Status::Success)
-                    }
-                    _ => Ok(Status::Success),
-                },
-                // ロゴ表示
-                "%logo" => command::logo::rsh_logo(),
-                // history: 履歴表示の組み込みコマンド
-                "%fl" => command::history::rsh_history(self.history_database.clone())
-                    .map(|_| Status::Success),
-                // exit: 終了用の組み込みコマンド
-                "exit" => command::exit::rsh_exit(),
-                // none: 何もなければコマンド実行
-                _ => self.rsh_launch(args),
-            } {
-                return Ok(r);
-            } else {
-                self.eprintln("Failed to execute command");
-                return Err(RshError::new("Failed to execute command"));
-            }
-        } else {
-            return Ok(Status::Success);
         }
     }
 
@@ -823,6 +664,14 @@ impl Rsh {
         stdout.flush().unwrap();
     }
 
+    fn ignore_tty_signals(&self) {
+        let sa = SigAction::new(SigHandler::SigIgn, SaFlags::empty(), SigSet::empty());
+        unsafe {
+            sigaction(Signal::SIGTSTP, &sa).unwrap();
+            sigaction(Signal::SIGTTIN, &sa).unwrap();
+            sigaction(Signal::SIGTTOU, &sa).unwrap();
+        }
+    }
     pub fn rsh_loop(&mut self) -> Result<Status, RshError> {
         let mut stdout = stdout();
 
@@ -1095,14 +944,13 @@ impl Rsh {
                     }
 
                     // 入力を実行可能な形式に分割
-
                     let parsed = Parse::parse_node(&self.buffer.buffer).clone();
 
                     // ASTの評価
                     if let Ok((_, node)) = parsed {
-                        let mut evaluator = evaluator::evaluator::Evaluator::new(self.clone());
+                        let mut evaluator = evaluator::evaluator::Evaluator::new(self.to_owned());
                         // 分割したコマンドを実行
-                        let _ = evaluator.evaluate(node);
+                        evaluator.evaluate(node);
                     } else {
                         self.eprintln(&format!("Failed to parse input"))
                     }
