@@ -10,13 +10,15 @@ use crossterm::{
     cursor::MoveToColumn,
     execute,
     style::{Color, Print, SetForegroundColor},
-    terminal::{Clear, ClearType},
+    terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType},
 };
 use std::io::stdout;
 
 fn main() {
+    enable_raw_mode().unwrap();
     let mut rsh = Rsh::new();
     let code = rsh.rsh_loop();
+    disable_raw_mode().unwrap();
     match code {
         Err(err) => {
             if let Err(e) = execute!(

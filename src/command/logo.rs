@@ -28,5 +28,5 @@ pub fn rsh_logo() -> Result<Status, RshError> {
     println!("     `   `   `  `        7..      _71....   `      `  .........(?7&?!                         `  `");
     println!(" `        `       `         ?7(,           _????!!``       ...?7!               `  `   `  `");
     println!("    `  `      `    `             ?7<<... ..       ....(?=`             `  `  `               `");
-    Ok(Status::Success)
+    Ok(Status::success())
 }

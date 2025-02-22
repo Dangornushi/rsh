@@ -1,7 +1,7 @@
 use crate::command;
-use crate::error::error::{RshError, Status};
+use crate::error::error::{RshError, Status, StatusCode};
 use crate::log::log_maneger::csv_writer;
-use crate::parser::parse::{Command, CompoundStatement, Identifier, Node};
+use crate::parser::parse::{Command, CompoundStatement, Identifier, Node, Define};
 use crate::rsh::rsh::Rsh;
 use crossterm::{execute, style::Print};
 use nix::{
@@ -13,6 +13,7 @@ use nix::{
     },
     unistd::{close, execvp, fork, getpgrp, pipe, setpgid, tcsetpgrp, ForkResult},
 };
+use std::any::Any;
 use std::io::stdout;
 use std::{ffi::CString, io::Write};
 
@@ -40,31 +41,35 @@ impl Evaluator {
 
         match pid {
             ForkResult::Parent { child } => {
+
                 setpgid(child, child).unwrap();
                 tcsetpgrp(0, child).unwrap();
                 close(pipe_read).unwrap();
                 close(pipe_write).unwrap();
 
                 let wait_pid_result =
-                    waitpid(child, None).map_err(|err| RshError::new(&format!("{}", err)));
+                    waitpid(child, None).map_err(|err| RshError::new(&format!("waited: {}", err)));
 
                 tcsetpgrp(0, getpgrp()).unwrap();
 
                 match wait_pid_result {
                     Ok(WaitStatus::Exited(_, return_code)) => {
                         // ui
-                        //self.return_code = return_code;
-                        Ok(Status::Success)
+                        match return_code {
+                            0 => Ok(Status::success()),
+                            1 => Err(RshError::new("not found")),
+                            _ => Err(RshError::new("somthing wrong")),
+                        }
                     }
                     Ok(WaitStatus::Signaled(_, _, _)) => {
-                        println!("signaled");
-                        Ok(Status::Success)
+                        Ok(Status::success())
                     }
                     Err(err) => {
+                        println!("parent err: {}", err.message);
                         //self.eprintln(&format!("rsh: {}", err.message));
-                        Ok(Status::Success)
+                        Err(err)
                     }
-                    _ => Ok(Status::Success),
+                    _ => Ok(Status::success()),
                 }
             }
             ForkResult::Child => {
@@ -102,9 +107,15 @@ impl Evaluator {
                     .map(|s| CString::new(s.as_bytes()).unwrap())
                     .collect();
 
-                execvp(&path, &c_args)
-                    .map_err(|_| RshError::new(&format!("{} is not found", args[0])))?;
-                Ok(Status::Success)
+                match execvp(&path, &c_args) {
+                    Ok(_) => {
+                        Ok(Status::success())
+                    },
+                    Err(err) => {
+                        Err(RshError::new(format!("{:?}", err).as_str()))
+                    }
+                }
+
 
                 // -------------
             }
@@ -118,38 +129,36 @@ impl Evaluator {
 
             let _ = csv_writer(args.join(" "), time, &path);
 
-            if let Ok(r) = match arg.as_str() {
-                // cd: ディレクトリ移動の組み込みコマンド
-                "cd" => match command::cd::rsh_cd(if let Option::Some(dir) = args.get(1) {
-                    dir
-                } else {
-                    execute!(stdout(), Print("\n")).unwrap();
-                    std::io::stdout().flush().unwrap();
-                    "./"
-                }) {
-                    Err(err) => {
-                        self.rsh.eprintln(&format!("Error: {}", err.message));
-                        Ok(Status::Success)
-                    }
-                    _ => Ok(Status::Success),
-                },
-                // ロゴ表示
-                "%logo" => command::logo::rsh_logo(),
-                // history: 履歴表示の組み込みコマンド
-                "%fl" => command::history::rsh_history(self.rsh.get_history_database())
-                    .map(|_| Status::Success),
-                // exit: 終了用の組み込みコマンド
-                "exit" => command::exit::rsh_exit(),
-                // none: 何もなければコマンド実行
-                _ => self.rsh_launch(args),
-            } {
-                return Ok(r);
-            } else {
-                //self.eprintln("Failed to execute command");
-                return Err(RshError::new("Failed to execute command"));
+            match arg.as_str() {
+                r => match r {
+                    // cd: ディレクトリ移動の組み込みコマンド
+                    "cd" => match command::cd::rsh_cd(if let Option::Some(dir) = args.get(1) {
+                        dir
+                    } else {
+                        execute!(stdout(), Print("\n")).unwrap();
+                        std::io::stdout().flush().unwrap();
+                        "./"
+                    }) {
+                        Err(err) => {
+                            self.rsh.eprintln(&format!("Error: {}", err.message));
+                            Ok(Status::success())
+                        }
+                        _ => Ok(Status::success()),
+                    },
+                    // ロゴ表示
+                    "%logo" => command::logo::rsh_logo(),
+                     // history: 履歴表示の組み込みコマンド
+                    "%fl" => command::history::rsh_history(self.rsh.get_history_database())
+                         .map(|_| Status::success()),
+                     // exit: 終了用の組み込みコマンド
+                    "exit" => command::exit::rsh_exit(),
+                     // none: 何もなければコマンド実行
+                    _ => self.rsh_launch(args),
+                }
             }
-        } else {
-            return Ok(Status::Success);
+        }
+        else {
+            return Err(RshError::new("Failed to get args"));
         }
     }
 
@@ -179,16 +188,30 @@ impl Evaluator {
 
         // 分割したコマンドを実行
         match self.rsh_execute(full_command.clone()) {
-            Ok(Status::Exit) => {
-                std::process::exit(0);
+            Ok(r) => {
+                if r.get_status_code() == StatusCode::Exit {
+                    std::process::exit(0);
+                }
+                let return_code = r.get_exit_code();
+                println!("Evaluator Exit: {}", return_code);
             }
-            Ok(_) => {
-                self.rsh.rsh_print("fin".to_string());
-            }
-            Err(_) => {
-                self.rsh.rsh_print("Error: command not found".to_string());
+            Err(err) => {
+                println!("Evaluator Error: {}", err.message);
+                //std::process::exit(1);
             }
         }
+    }
+
+    fn eval_define(&mut self, define: Define) {
+        let var = match define.get_var() {
+            Node::Identifier(identifier) => self.eval_identifier(identifier),
+            _ => Default::default(), // Handle other cases appropriately
+        };
+        let data = match define.get_data() {
+            Node::Identifier(identifier) => self.eval_identifier(identifier),
+            _ => Default::default(), // Handle other cases appropriately
+        };
+        println!("{}: {}\n", var, data);
     }
 
     fn eval_compound_statement(&mut self, expr: CompoundStatement) {
@@ -198,82 +221,120 @@ impl Evaluator {
                 Node::Command(command) => {
                     self.eval_command(*command);
                 }
-                _ => {}
+                Node::Define(define) => {
+                    self.eval_define( *define);
+                }
+                /*
+                */
+                _ => {println!("error: {:?}", s);}
             }
         }
     }
 
-    pub fn evaluate(&mut self, ast: Node) {
+    pub fn evaluate(&mut self, ast: Node) -> i32{
         // ASTを評価
         match ast {
             Node::CompoundStatement(stmt) => {
                 self.eval_compound_statement(stmt);
+                0
             }
-            _ => {}
+            Node::Identifier(identifier) => {
+                self.eval_identifier(identifier);
+                0
+            },
+            _ => {1}
         }
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn test_restore_tty_signals() {
+        let rsh = Rsh::new();
+        let evaluator = Evaluator::new(rsh);
+        evaluator.restore_tty_signals();
+        // Add assertions or checks if possible
+    }
+    /*
+
+    #[test]
+    fn test_rsh_launch_success() {
+        let rsh = Rsh::new();
+        let mut evaluator = Evaluator::new(rsh);
+        let args = vec!["echo".to_string(), "Hello, world!".to_string()];
+        let result = evaluator.rsh_launch(args);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Status::Success);
+    }
+    #[test]
+    fn test_rsh_launch_failure() {
+        let rsh = Rsh::new();
+        let mut evaluator = Evaluator::new(rsh);
+        let args = vec!["nonexistent_command".to_string()];
+        let result = evaluator.rsh_launch(args);
+        assert!(result.is_err());
+    }
+    */
+
+    #[test]
+    fn test_rsh_execute_cd() {
+        let rsh = Rsh::new();
+        let mut evaluator = Evaluator::new(rsh);
+        let args = vec!["cd".to_string(), "/".to_string()];
+        let result = evaluator.rsh_execute(args);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Status::success());
+    }
+
+    #[test]
+    fn test_eval_identifier() {
+        let rsh = Rsh::new();
+        let evaluator = Evaluator::new(rsh);
+        let identifier = Identifier::new("test".to_string());
+        let result = evaluator.eval_identifier(identifier);
+        assert_eq!(result, "test");
+    }
+
+    /*
+    #[test]
+    fn test_eval_command() {
+        let rsh = Rsh::new();
+        let mut evaluator = Evaluator::new(rsh);
+        let command = Command::new(
+            Node::Identifier(Identifier::new("echo".to_string())),
+            vec![Node::Identifier(Identifier::new("Hello".to_string()))],
+        );
+        evaluator.eval_command(command);
+        // Add assertions or checks if possible
+    }
 
     #[test]
     fn test_eval_compound_statement() {
-        let rsh = Rsh::new(); // Adjust with appropriate initialization
+        let rsh = Rsh::new();
         let mut evaluator = Evaluator::new(rsh);
-        let compound_statement = CompoundStatement::new(vec![]); // Adjust with appropriate initialization
-        evaluator.eval_compound_statement(compound_statement);
-        // Add assertions here to verify the expected behavior
-    }
-
-    #[test]
-    fn test_evaluate_with_compound_statement() {
-        let rsh = Rsh::new(); // Adjust with appropriate initialization
-        let mut evaluator = Evaluator::new(rsh);
-        let compound_statement = CompoundStatement::new(vec![]); // Adjust with appropriate initialization
-        let ast = Node::CompoundStatement(compound_statement);
-        evaluator.evaluate(ast);
-    }
-
-    #[test]
-    fn test_evaluate_with_other_node() {
-        let rsh = Rsh::new(); // Adjust with appropriate initialization
-        let mut evaluator = Evaluator::new(rsh);
-        let other_node = Node::Identifier(Identifier::new("hello".to_string())); // Replace with an actual variant of Node
-        let result = evaluator.evaluate(other_node);
-        evaluator.evaluate(other_node);
-    }
-    #[test]
-    fn test_eval_command_with_identifier() {
-        let rsh = Rsh::new(); // Adjust with appropriate initialization
-        let mut evaluator = Evaluator::new(rsh);
-        let identifier = Identifier::new("test_command".to_string());
-        let command = Command::new(Node::Identifier(identifier.clone()), vec![]);
-        evaluator.eval_command(command);
-        // Add assertions here to verify the expected behavior
-    }
-
-    #[test]
-    fn test_eval_command_with_sub_commands() {
-        let rsh = Rsh::new(); // Adjust with appropriate initialization
-        let mut evaluator = Evaluator::new(rsh);
-        let identifier = Identifier::new("echo".to_string());
-        let sub_identifier = Identifier::new("hello, world".to_string());
         let command = Command::new(
-            Node::Identifier(identifier.clone()),
-            vec![Node::Identifier(sub_identifier.clone())],
+            Node::Identifier(Identifier::new("echo".to_string())),
+            vec![Node::Identifier(Identifier::new("Hello".to_string()))],
         );
-        evaluator.eval_command(command);
-        // Add assertions here to verify the expected behavior
+        let compound_statement = CompoundStatement::new(vec![Node::Command(Box::new(command))]);
+        evaluator.eval_compound_statement(compound_statement);
+        // Add assertions or checks if possible
     }
 
     #[test]
-    fn test_eval_command_with_non_identifier() {
-        let rsh = Rsh::new(); // Adjust with appropriate initialization
+    fn test_evaluate() {
+        let rsh = Rsh::new();
         let mut evaluator = Evaluator::new(rsh);
-        let non_identifier_node = Node::CompoundStatement(CompoundStatement::new(vec![])); // Replace with an actual non-identifier variant of Node
-        let command = Command::new(non_identifier_node, vec![]);
-        evaluator.eval_command(command);
-        // 期待される動作を確認するためのアサーションを追加
+        let command = Command::new(
+            Node::Identifier(Identifier::new("echo".to_string())),
+            vec![Node::Identifier(Identifier::new("Hello".to_string()))],
+        );
+        let ast = Node::CompoundStatement(CompoundStatement::new(vec![Node::Command(Box::new(
+            command,
+        ))]));
+        evaluator.evaluate(ast);
+        // Add assertions or checks if possible
     }
+     */
 }

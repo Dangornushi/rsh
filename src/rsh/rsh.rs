@@ -1,4 +1,4 @@
-use crate::error::error::{RshError, Status};
+use crate::error::error::{RshError, Status, StatusCode};
 use crate::evaluator;
 use crate::log::log_maneger::csv_reader;
 use crate::log::log_maneger::History;
@@ -11,7 +11,7 @@ use crossterm::{
     event::{read, Event, KeyCode, KeyEvent},
     execute,
     style::{Color, Print, SetForegroundColor},
-    terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType},
+    terminal::{Clear, ClearType},
 };
 use std::{
     env, fs,
@@ -65,6 +65,7 @@ impl Prompt {
 }
 
 #[derive(PartialEq, Clone, Copy)]
+#[derive(Debug)]
 enum Mode {
     Nomal,
     Visual,
@@ -584,7 +585,7 @@ impl Rsh {
             //self.initializations_cursor_value();
         }
 
-        enable_raw_mode().unwrap();
+        //enable_raw_mode().unwrap();
 
         loop {
             if !direction_set {
@@ -650,7 +651,9 @@ impl Rsh {
                         break;
                     }
                     KeyCode::Char('a') => {
-                        self.move_cursor_right(&mut stdout, direction, &mut range_string);
+                        if self.char_count + 1 < self.buffer.buffer.chars().count() {
+                            self.move_cursor_right(&mut stdout, direction, &mut range_string);
+                        }
                         self.now_mode = Mode::Input;
                         break;
                     }
@@ -660,7 +663,7 @@ impl Rsh {
                 std::io::stdout().flush().unwrap();
             }
         }
-        disable_raw_mode().unwrap();
+        //disable_raw_mode().unwrap();
         stdout.flush().unwrap();
     }
 
@@ -687,8 +690,8 @@ impl Rsh {
         self.cursor_x = self.buffer.buffer.len();
         self.char_count = self.buffer.buffer.chars().count();
 
+
         loop {
-            enable_raw_mode().unwrap();
 
             let _ = self.set_prompt();
             let prompt = Prompt::new(
@@ -701,6 +704,7 @@ impl Rsh {
             self.prompt = prompt;
 
             self.rsh_print(self.buffer.buffer.clone());
+
 
             match self.now_mode {
                 Mode::Nomal => {
@@ -721,19 +725,20 @@ impl Rsh {
                     let mut stack_buffer = String::new();
                     let mut tab_counter = 0;
 
-                    enable_raw_mode().unwrap();
+                    //jenable_raw_mode().unwrap();
 
+                    self.get_directory_contents("./");
+                    self.initializations_cursor_view(&mut stdout);
                     loop {
-                        self.get_directory_contents("./");
-                        self.initializations_cursor_view(&mut stdout);
+                        // 文字が入力ごとにループが回る
 
                         // キー入力の取得
-                        if let Event::Key(KeyEvent {
+                        if let Ok(Event::Key(KeyEvent {
                             code,
                             modifiers: _,
                             kind: _,
                             state: _,
-                        }) = read().unwrap()
+                        })) = read()
                         {
                             match code {
                                 KeyCode::Esc => {
@@ -828,12 +833,16 @@ impl Rsh {
                                             }
                                             self.buffer.buffer.clone()
                                         }
-                                        _ => self.buffer.buffer.clone(),
+                                        _ => {
+                                            execute!(stdout, Print("other\n")).unwrap();
+                                            "".to_string()
+                                        }
+                                        ,
                                     };
                                 }
                             }
-                        }
 
+                        }
                         // コマンド実行履歴の中からbufferで始まるものを取得
                         let history_matches: Vec<String> = self
                             .history_database
@@ -924,12 +933,11 @@ impl Rsh {
                         continue;
                     }
 
-                    disable_raw_mode().unwrap();
+                    //disable_raw_mode().unwrap();
                     //self.cursor_x = 0;
                     //self.char_count = 0;
                     self.set_prompt_color("#ECE1B4".to_string())?;
                     execute!(stdout, MoveToColumn(0), Print("\n")).unwrap();
-
                     // 実行可能なコマンド一覧を取得
                     self.get_executable_commands();
 
@@ -943,19 +951,11 @@ impl Rsh {
                         self.exists_rshenv = false;
                     }
 
-                    // 入力を実行可能な形式に分割
-                    let parsed = Parse::parse_node(&self.buffer.buffer).clone();
+                    // コマンドの実行
+                    self.execute_commands();
 
-                    // ASTの評価
-                    if let Ok((_, node)) = parsed {
-                        let mut evaluator = evaluator::evaluator::Evaluator::new(self.to_owned());
-                        // 分割したコマンドを実行
-                        evaluator.evaluate(node);
-                    } else {
-                        self.eprintln(&format!("Failed to parse input"))
-                    }
+                    execute!(stdout, MoveToColumn(0), Print(format!("{}\n", self.return_code).to_string())).unwrap();
 
-                    self.buffer.buffer = String::new();
                 }
 
                 Mode::Visual => {
@@ -967,6 +967,25 @@ impl Rsh {
                 }
             }
         }
+
+    }
+
+    fn execute_commands(&mut self) ->  i32 {
+        // 入力を実行可能な形式に分割
+        let parsed = Parse::parse_node(&self.buffer.buffer).clone();
+
+        // ASTの評価
+        if let Ok((_, node)) = parsed {
+            // 分割したコマンドを実行
+            let code = evaluator::evaluator::Evaluator::new(self.to_owned()).evaluate(node);
+            self.buffer.buffer = String::new();
+            code
+        } else {
+            self.buffer.buffer = String::new();
+            self.eprintln(&format!("Failed to parse input"));
+            1
+        }
+
     }
 
     pub fn new() -> Self {
@@ -984,6 +1003,7 @@ impl Rsh {
         }
     }
 }
+
 impl Drop for Rsh {
     fn drop(&mut self) {
         // 必要なクリーンアップをここで実行
@@ -996,3 +1016,42 @@ impl Drop for Rsh {
         .unwrap();
     }
 }
+
+/*
+    #[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_execute_commands_valid() {
+        let mut rsh = Rsh::new();
+        rsh.buffer.buffer = "echo Hello, world!".to_string();
+        let return_code = rsh.execute_commands();
+        assert_eq!(return_code, 0);
+    }
+
+    #[test]
+    fn test_execute_commands_invalid() {
+        let mut rsh = Rsh::new();
+        rsh.buffer.buffer = "invalid_command".to_string();
+        let return_code = rsh.execute_commands();
+        assert_eq!(return_code, 1);
+    }
+
+    #[test]
+    fn test_execute_commands_empty() {
+        let mut rsh = Rsh::new();
+        rsh.buffer.buffer = "".to_string();
+        let return_code = rsh.execute_commands();
+        assert_eq!(return_code, 1);
+    }
+
+    #[test]
+    fn test_execute_commands_with_args() {
+        let mut rsh = Rsh::new();
+        rsh.buffer.buffer = "echo \"Hello, world!\" -n".to_string();
+        let return_code = rsh.execute_commands();
+        assert_eq!(return_code, 0);
+    }
+}
+*/
