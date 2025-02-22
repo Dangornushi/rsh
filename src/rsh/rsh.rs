@@ -947,7 +947,9 @@ impl Rsh {
 
                     disable_raw_mode().unwrap();
                     // コマンドの実行
-                    self.execute_commands();
+                    let mut buffer = &mut self.buffer.buffer.clone();
+                    self.execute_commands(&mut buffer);
+                    self.buffer.buffer.clear();
                     enable_raw_mode().unwrap();
 
                     //execute!(stdout, MoveToColumn(0), Print(format!("{}\n", self.return_code).to_string())).unwrap();
@@ -964,18 +966,18 @@ impl Rsh {
         }
     }
 
-    fn execute_commands(&mut self) -> i32 {
+    pub fn execute_commands(&mut self, command: &mut String) -> i32 {
         // 入力を実行可能な形式に分割
-        let parsed = Parse::parse_node(&self.buffer.buffer).clone();
+        let parsed = Parse::parse_node(&command).clone();
 
         // ASTの評価
         if let Ok((_, node)) = parsed {
             // 分割したコマンドを実行
             let code = evaluator::evaluator::Evaluator::new(self.to_owned()).evaluate(node);
-            self.buffer.buffer = String::new();
+            *command = String::new();
             code
         } else {
-            self.buffer.buffer = String::new();
+            *command = String::new();
             self.eprintln(&format!("Failed to parse input"));
             1
         }

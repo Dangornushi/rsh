@@ -13,6 +13,7 @@ pub enum Node {
     Statement(Statement),
     Define(Box<Define>),
     CommandStatement(Box<CommandStatement>),
+    ExecScript(Box<ExecScript>),
     Identifier(Identifier),
 }
 impl Node {
@@ -25,6 +26,7 @@ impl Node {
         }
     }
 }
+
 #[derive(Debug, PartialEq, Clone)]
 struct Expression {
     // 式の集合
@@ -103,13 +105,17 @@ impl Define {
 #[derive(Debug, PartialEq, Clone)]
 pub struct CommandStatement(Node, Vec<Node>);
 impl CommandStatement {
+    // メインコマンド・引数のセット
     pub fn new(val: Node, val2: Vec<Node>) -> CommandStatement {
         CommandStatement(val, val2)
     }
+
+    // メインコマンドを返す
     pub fn get_command(&self) -> Node {
         self.0.clone()
     }
 
+    // コマンド引数を返す
     pub fn get_sub_command(&self) -> Vec<Node> {
         self.1.clone()
     }
@@ -130,11 +136,25 @@ impl Identifier {
     }
 }
 
+// 実行可能ファイルやスクリプトの実行を表す
+#[derive(Debug, PartialEq, Clone)]
+pub struct ExecScript {
+    exec_script: Node,
+}
+impl ExecScript {
+    pub fn new(val: Node) -> ExecScript {
+        ExecScript { exec_script: val }
+    }
+    pub fn get_filename(&self) -> Node {
+        self.exec_script.clone()
+    }
+}
+
 pub struct Parse {}
 impl Parse {
     fn parse_constant(input: &str) -> IResult<&str, Node> {
         let (no_used, parsed) =
-            nom::bytes::complete::is_not(" ;:!?\\/*+~=[](){}<>@^&,`#^%|")(input)?;
+            nom::bytes::complete::is_not(" ;:!?\\/*~=[](){}<>@^&,`#^%|")(input)?;
         Ok((
             no_used,
             Node::Identifier(Identifier::new(parsed.to_string())),
@@ -150,6 +170,41 @@ impl Parse {
         Ok((
             no_used,
             Node::Identifier(Identifier::new(parsed.to_string())),
+        ))
+    }
+
+    fn parse_not_space(input: &str) -> IResult<&str, Node> {
+        let (no_used, parsed) = nom::bytes::complete::is_not(" ")(input)?;
+        Ok((
+            no_used,
+            Node::Identifier(Identifier::new(parsed.to_string())),
+        ))
+    }
+    fn parse_filename_with_dot(input: &str) -> IResult<&str, Node> {
+        let (no_used, parsed) = permutation((
+            nom::bytes::complete::is_not("."),
+            nom::bytes::complete::is_not(" "),
+        ))(input)?;
+        Ok((
+            no_used,
+            Node::Identifier(Identifier::new(
+                format!("{}{}", parsed.0, parsed.1).to_string(),
+            )),
+        ))
+    }
+
+    fn parse_filename(input: &str) -> IResult<&str, Node> {
+        let (no_used, parsed) = alt((Self::parse_filename_with_dot, Self::parse_not_space))(input)?;
+
+        Ok((no_used, parsed))
+    }
+
+    fn parse_exec_script(input: &str) -> IResult<&str, Node> {
+        let (no_used, parsed) = permutation((tag("./"), Self::parse_filename))(input)?;
+
+        Ok((
+            no_used,
+            Node::ExecScript(Box::new(ExecScript::new(parsed.1))),
         ))
     }
 
@@ -198,7 +253,11 @@ impl Parse {
     }
 
     fn parse_statement(input: &str) -> IResult<&str, Node> {
-        let (no_used, parsed) = alt((Self::parse_define, Self::parse_command))(input)?;
+        let (no_used, parsed) = alt((
+            Self::parse_exec_script,
+            Self::parse_define,
+            Self::parse_command,
+        ))(input)?;
         Ok((no_used, parsed))
     }
 

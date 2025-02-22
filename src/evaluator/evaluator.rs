@@ -193,6 +193,8 @@ impl Evaluator {
         let mut full_command = vec![command];
         full_command.extend(sub_command);
 
+        println!("Command: {:?}", full_command);
+
         // 分割したコマンドを実行
         match self.rsh_execute(full_command.clone()) {
             Ok(r) => {
@@ -200,7 +202,7 @@ impl Evaluator {
                     std::process::exit(0);
                 }
                 let return_code = r.get_exit_code();
-                //println!("Evaluator Exit: {}", return_code);
+                println!("Evaluator Exit: {}", return_code);
             }
             Err(err) => {
                 println!("Evaluator-{}", err.message);
@@ -231,10 +233,15 @@ impl Evaluator {
                 Node::Define(define) => {
                     self.eval_define(*define);
                 }
+                Node::ExecScript(script) => {
+                    // スクリプトを実行
+                    Rsh::execute_commands(&mut self.rsh, &mut "echo Hello, world!".to_string());
+                    println!("Script: {:?}", script);
+                }
                 /*
                  */
                 _ => {
-                    println!("error: {:?}", s);
+                    println!("I don't know: {:?}", s);
                 }
             }
         }
