@@ -1,6 +1,6 @@
 use nom::branch::{alt, permutation};
 use nom::bytes::complete::tag;
-use nom::character::complete::{multispace0};
+use nom::character::complete::multispace0;
 use nom::combinator::{map, opt};
 use nom::multi::{many0, many1};
 use nom::IResult;
@@ -12,7 +12,7 @@ pub enum Node {
     CompoundStatement(CompoundStatement),
     Statement(Statement),
     Define(Box<Define>),
-    Command(Box<Command>),
+    CommandStatement(Box<CommandStatement>),
     Identifier(Identifier),
 }
 impl Node {
@@ -20,7 +20,7 @@ impl Node {
     pub fn eval(&self) -> Vec<Node> {
         match self {
             Node::CompoundStatement(compound_statement) => compound_statement.eval(),
-            Node::Command(command) => command.0.eval(),
+            Node::CommandStatement(command) => command.0.eval(),
             _ => vec![],
         }
     }
@@ -82,7 +82,7 @@ impl Statement {
 
 // 代入を表す
 #[derive(Debug, PartialEq, Clone)]
-pub struct Define{
+pub struct Define {
     var: Node,
     data: Node,
 }
@@ -101,10 +101,10 @@ impl Define {
 
 // コマンドを表す
 #[derive(Debug, PartialEq, Clone)]
-pub struct Command(Node, Vec<Node>);
-impl Command {
-    pub fn new(val: Node, val2: Vec<Node>) -> Command {
-        Command(val, val2)
+pub struct CommandStatement(Node, Vec<Node>);
+impl CommandStatement {
+    pub fn new(val: Node, val2: Vec<Node>) -> CommandStatement {
+        CommandStatement(val, val2)
     }
     pub fn get_command(&self) -> Node {
         self.0.clone()
@@ -133,7 +133,8 @@ impl Identifier {
 pub struct Parse {}
 impl Parse {
     fn parse_constant(input: &str) -> IResult<&str, Node> {
-        let (no_used, parsed) = nom::bytes::complete::is_not(" ;:!?\\/*+~=[](){}<>@^&.,`#^%|")(input)?;
+        let (no_used, parsed) =
+            nom::bytes::complete::is_not(" ;:!?\\/*+~=[](){}<>@^&,`#^%|")(input)?;
         Ok((
             no_used,
             Node::Identifier(Identifier::new(parsed.to_string())),
@@ -170,9 +171,9 @@ impl Parse {
                     for opt in options {
                         v.push(opt.1.clone());
                     }
-                    Node::Command(Box::new(Command::new(command, v)))
+                    Node::CommandStatement(Box::new(CommandStatement::new(command, v)))
                 } else {
-                    Node::Command(Box::new(Command::new(command, Vec::new())))
+                    Node::CommandStatement(Box::new(CommandStatement::new(command, Vec::new())))
                 }
             },
         )(input)?;
@@ -191,9 +192,7 @@ impl Parse {
                 Self::parse_identifier,
                 multispace0,
             )),
-            |(_, var, _, _, _,data,_)| {
-                Node::Define(Box::new(Define::new(var, data)))
-            }
+            |(_, var, _, _, _, data, _)| Node::Define(Box::new(Define::new(var, data))),
         )(input)?;
         Ok((no_used, parsed))
     }
@@ -224,7 +223,7 @@ impl Parse {
     }
 
     pub fn parse_node(input: &str) -> IResult<&str, Node> {
-        let (no_used, parsed) =Self::parse_compound_statement(input)?;
+        let (no_used, parsed) = Self::parse_compound_statement(input)?;
         Ok((no_used, parsed))
     }
 }
@@ -281,7 +280,7 @@ mod tests {
     #[test]
     fn test_parse_command() {
         let input = "echo";
-        let expected = Node::Command(Box::new(Command(
+        let expected = Node::CommandStatement(Box::new(CommandStatement(
             Node::Identifier(Identifier::new("echo".to_string())),
             vec![],
         )));
@@ -289,7 +288,7 @@ mod tests {
         assert_eq!(result, Ok(("", expected)));
 
         let input = "echo hello";
-        let expected = Node::Command(Box::new(Command(
+        let expected = Node::CommandStatement(Box::new(CommandStatement(
             Node::Identifier(Identifier::new("echo".to_string())),
             vec![Node::Identifier(Identifier::new("hello".to_string()))],
         )));
@@ -297,7 +296,7 @@ mod tests {
         assert_eq!(result, Ok(("", expected)));
 
         let input = "echo         hello";
-        let expected = Node::Command(Box::new(Command(
+        let expected = Node::CommandStatement(Box::new(CommandStatement(
             Node::Identifier(Identifier::new("echo".to_string())),
             vec![Node::Identifier(Identifier::new("hello".to_string()))],
         )));
@@ -305,30 +304,25 @@ mod tests {
         assert_eq!(result, Ok(("", expected)));
 
         let input = "echo \"だんごむし\"";
-        let expected = Node::Command(Box::new(Command(
+        let expected = Node::CommandStatement(Box::new(CommandStatement(
             Node::Identifier(Identifier::new("echo".to_string())),
-            vec![Node::Identifier(Identifier::new(
-                "だんごむし".to_string(),
-            ))],
+            vec![Node::Identifier(Identifier::new("だんごむし".to_string()))],
         )));
         let result = Parse::parse_command(input);
         assert_eq!(result, Ok(("", expected)));
-
     }
 
     #[test]
     fn test_parse_compound_statement() {
         let input = "echo \"aaaa\"; echo \"だんごむし\"";
         let expected = Node::CompoundStatement(CompoundStatement::new(vec![
-            Node::Command(Box::new(Command(
+            Node::CommandStatement(Box::new(CommandStatement(
                 Node::Identifier(Identifier::new("echo".to_string())),
                 vec![Node::Identifier(Identifier::new("aaaa".to_string()))],
             ))),
-            Node::Command(Box::new(Command(
+            Node::CommandStatement(Box::new(CommandStatement(
                 Node::Identifier(Identifier::new("echo".to_string())),
-                vec![Node::Identifier(Identifier::new(
-                    "だんごむし".to_string(),
-                ))],
+                vec![Node::Identifier(Identifier::new("だんごむし".to_string()))],
             ))),
         ]));
 
@@ -336,11 +330,11 @@ mod tests {
         assert_eq!(result, Ok(("", expected)));
         let input = "echo hello; echo world";
         let expected = Node::CompoundStatement(CompoundStatement::new(vec![
-            Node::Command(Box::new(Command(
+            Node::CommandStatement(Box::new(CommandStatement(
                 Node::Identifier(Identifier::new("echo".to_string())),
                 vec![Node::Identifier(Identifier::new("hello".to_string()))],
             ))),
-            Node::Command(Box::new(Command(
+            Node::CommandStatement(Box::new(CommandStatement(
                 Node::Identifier(Identifier::new("echo".to_string())),
                 vec![Node::Identifier(Identifier::new("world".to_string()))],
             ))),

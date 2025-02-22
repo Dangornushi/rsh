@@ -1,7 +1,7 @@
 use crate::command;
 use crate::error::error::{RshError, Status, StatusCode};
 use crate::log::log_maneger::csv_writer;
-use crate::parser::parse::{Command, CompoundStatement, Identifier, Node, Define};
+use crate::parser::parse::{CommandStatement, CompoundStatement, Define, Identifier, Node};
 use crate::rsh::rsh::Rsh;
 use crossterm::{execute, style::Print};
 use nix::{
@@ -15,6 +15,7 @@ use nix::{
 };
 use std::any::Any;
 use std::io::stdout;
+use std::process::Command;
 use std::{ffi::CString, io::Write};
 
 pub struct Evaluator {
@@ -41,7 +42,6 @@ impl Evaluator {
 
         match pid {
             ForkResult::Parent { child } => {
-
                 setpgid(child, child).unwrap();
                 tcsetpgrp(0, child).unwrap();
                 close(pipe_read).unwrap();
@@ -61,9 +61,7 @@ impl Evaluator {
                             _ => Err(RshError::new("somthing wrong")),
                         }
                     }
-                    Ok(WaitStatus::Signaled(_, _, _)) => {
-                        Ok(Status::success())
-                    }
+                    Ok(WaitStatus::Signaled(_, _, _)) => Ok(Status::success()),
                     Err(err) => {
                         println!("parent err: {}", err.message);
                         //self.eprintln(&format!("rsh: {}", err.message));
@@ -108,14 +106,9 @@ impl Evaluator {
                     .collect();
 
                 match execvp(&path, &c_args) {
-                    Ok(_) => {
-                        Ok(Status::success())
-                    },
-                    Err(err) => {
-                        Err(RshError::new(format!("{:?}", err).as_str()))
-                    }
+                    Ok(_) => Ok(Status::success()),
+                    Err(err) => Err(RshError::new(format!("{:?}", err).as_str())),
                 }
-
 
                 // -------------
             }
@@ -147,17 +140,31 @@ impl Evaluator {
                     },
                     // ロゴ表示
                     "%logo" => command::logo::rsh_logo(),
-                     // history: 履歴表示の組み込みコマンド
+                    // history: 履歴表示の組み込みコマンド
                     "%fl" => command::history::rsh_history(self.rsh.get_history_database())
-                         .map(|_| Status::success()),
-                     // exit: 終了用の組み込みコマンド
+                        .map(|_| Status::success()),
+                    // exit: 終了用の組み込みコマンド
                     "exit" => command::exit::rsh_exit(),
-                     // none: 何もなければコマンド実行
-                    _ => self.rsh_launch(args),
-                }
+                    // none: 何もなければコマンド実行
+                    _ => {
+                        match Command::new(args[0].clone()).args(&args[1..]).spawn() {
+                            Ok(mut child) => child
+                                .wait()
+                                .map(|status| {
+                                    if status.success() {
+                                        Status::success()
+                                    } else {
+                                        Status::notfound()
+                                    }
+                                })
+                                .map_err(|err| RshError::new(&format!("Error: {}", err))),
+                            Err(err) => Err(RshError::new(&format!("Error: {}", err))),
+                        }
+                        //self.rsh_launch(args),
+                    }
+                },
             }
-        }
-        else {
+        } else {
             return Err(RshError::new("Failed to get args"));
         }
     }
@@ -166,7 +173,7 @@ impl Evaluator {
         expr.eval()
     }
 
-    fn eval_command(&mut self, expr: Command) {
+    fn eval_command(&mut self, expr: CommandStatement) {
         let command = match expr.get_command() {
             Node::Identifier(identifier) => self.eval_identifier(identifier.clone()),
             _ => {
@@ -193,10 +200,10 @@ impl Evaluator {
                     std::process::exit(0);
                 }
                 let return_code = r.get_exit_code();
-                println!("Evaluator Exit: {}", return_code);
+                //println!("Evaluator Exit: {}", return_code);
             }
             Err(err) => {
-                println!("Evaluator Error: {}", err.message);
+                println!("Evaluator-{}", err.message);
                 //std::process::exit(1);
             }
         }
@@ -218,20 +225,22 @@ impl Evaluator {
         let expr = expr.eval();
         for s in expr {
             match s {
-                Node::Command(command) => {
+                Node::CommandStatement(command) => {
                     self.eval_command(*command);
                 }
                 Node::Define(define) => {
-                    self.eval_define( *define);
+                    self.eval_define(*define);
                 }
                 /*
-                */
-                _ => {println!("error: {:?}", s);}
+                 */
+                _ => {
+                    println!("error: {:?}", s);
+                }
             }
         }
     }
 
-    pub fn evaluate(&mut self, ast: Node) -> i32{
+    pub fn evaluate(&mut self, ast: Node) -> i32 {
         // ASTを評価
         match ast {
             Node::CompoundStatement(stmt) => {
@@ -241,8 +250,8 @@ impl Evaluator {
             Node::Identifier(identifier) => {
                 self.eval_identifier(identifier);
                 0
-            },
-            _ => {1}
+            }
+            _ => 1,
         }
     }
 }

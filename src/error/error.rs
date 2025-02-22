@@ -15,6 +15,7 @@ impl RshError {
 pub enum StatusCode {
     Success,
     NotFound,
+    Failure,
     Exit,
 }
 #[derive(Debug, PartialEq)]
@@ -48,4 +49,3 @@ impl Status {
         self.exit_code
     }
 }
-

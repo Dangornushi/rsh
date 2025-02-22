@@ -11,7 +11,7 @@ use crossterm::{
     event::{read, Event, KeyCode, KeyEvent},
     execute,
     style::{Color, Print, SetForegroundColor},
-    terminal::{Clear, ClearType},
+    terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType},
 };
 use std::{
     env, fs,
@@ -64,8 +64,7 @@ impl Prompt {
     }
 }
 
-#[derive(PartialEq, Clone, Copy)]
-#[derive(Debug)]
+#[derive(PartialEq, Clone, Copy, Debug)]
 enum Mode {
     Nomal,
     Visual,
@@ -690,9 +689,7 @@ impl Rsh {
         self.cursor_x = self.buffer.buffer.len();
         self.char_count = self.buffer.buffer.chars().count();
 
-
         loop {
-
             let _ = self.set_prompt();
             let prompt = Prompt::new(
                 username(),
@@ -704,7 +701,6 @@ impl Rsh {
             self.prompt = prompt;
 
             self.rsh_print(self.buffer.buffer.clone());
-
 
             match self.now_mode {
                 Mode::Nomal => {
@@ -837,11 +833,9 @@ impl Rsh {
                                             execute!(stdout, Print("other\n")).unwrap();
                                             "".to_string()
                                         }
-                                        ,
                                     };
                                 }
                             }
-
                         }
                         // コマンド実行履歴の中からbufferで始まるものを取得
                         let history_matches: Vec<String> = self
@@ -951,11 +945,12 @@ impl Rsh {
                         self.exists_rshenv = false;
                     }
 
+                    disable_raw_mode().unwrap();
                     // コマンドの実行
                     self.execute_commands();
+                    enable_raw_mode().unwrap();
 
-                    execute!(stdout, MoveToColumn(0), Print(format!("{}\n", self.return_code).to_string())).unwrap();
-
+                    //execute!(stdout, MoveToColumn(0), Print(format!("{}\n", self.return_code).to_string())).unwrap();
                 }
 
                 Mode::Visual => {
@@ -967,10 +962,9 @@ impl Rsh {
                 }
             }
         }
-
     }
 
-    fn execute_commands(&mut self) ->  i32 {
+    fn execute_commands(&mut self) -> i32 {
         // 入力を実行可能な形式に分割
         let parsed = Parse::parse_node(&self.buffer.buffer).clone();
 
@@ -985,7 +979,6 @@ impl Rsh {
             self.eprintln(&format!("Failed to parse input"));
             1
         }
-
     }
 
     pub fn new() -> Self {
