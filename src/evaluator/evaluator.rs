@@ -193,7 +193,6 @@ impl Evaluator {
         let mut full_command = vec![command];
         full_command.extend(sub_command);
 
-        println!("Command: {:?}", full_command);
 
         // 分割したコマンドを実行
         match self.rsh_execute(full_command.clone()) {
@@ -235,8 +234,7 @@ impl Evaluator {
                 }
                 Node::ExecScript(script) => {
                     // スクリプトを実行
-                    Rsh::execute_commands(&mut self.rsh, &mut "echo Hello, world!".to_string());
-                    println!("Script: {:?}", script);
+                    Rsh::execute_commands(&mut self.rsh, &mut "echo ok\necho bad\n".to_string());
                 }
                 /*
                  */
