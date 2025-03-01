@@ -15,6 +15,7 @@ pub enum Node {
     Statement(Statement),
     Define(Box<Define>),
     CommandStatement(Box<CommandStatement>),
+    Pipeline(Pipeline),
     ExecScript(Box<ExecScript>),
     Identifier(Identifier),
 }
@@ -24,7 +25,19 @@ impl Node {
         match self {
             Node::CompoundStatement(compound_statement) => compound_statement.eval(),
             Node::CommandStatement(command) => command.0.eval(),
-            _ => vec![],
+            Node::Pipeline(pipeline) => pipeline.get_commands(),
+            _ => Default::default(),
+        }
+    }
+
+    pub fn get_node(&self) -> Node {
+        self.clone()
+    }
+
+    pub fn get_sub_command(&self) -> Vec<Node> {
+        match self {
+            Node::CommandStatement(command) => command.get_sub_command(),
+            _ => Default::default(),
         }
     }
 }
@@ -122,6 +135,19 @@ impl CommandStatement {
         self.1.clone()
     }
 }
+#[derive(Debug, PartialEq, Clone)]
+pub struct Pipeline(Vec<Node>);
+impl Pipeline {
+    pub fn new(val: Vec<Node>) -> Pipeline {
+        Pipeline(val)
+    }
+    pub fn from(val: Node) -> Pipeline {
+        Pipeline(Vec::from([val]))
+    }
+    pub fn get_commands(&self) -> Vec<Node> {
+        self.0.clone()
+    }
+}
 
 /// 文字列を表す
 #[derive(Debug, PartialEq, Clone)]
@@ -152,10 +178,33 @@ impl ExecScript {
     }
 }
 
+// パイプ
+// command1 | command2  # command1の標準出力をcommand2の標準入力に渡す
+
+// 入力
+// command < file   # ファイルの内容をコマンドの標準入力に渡す
+
+// 出力
+// command >&2      # 標準出力を標準エラー出力にリダイレクト
+
+// command > file   # ファイル作成 or 上書き
+// command >> file  # 追加出力。ファイルがなければ作成
+// command 2> file  # 標準エラー出力をファイルにリダイレクト(作成 or 上書き)
+
+// command &> file      # 標準出力/エラー出力を同一ファイルにリダイレクト
+// command > file 2>&1  # 同上
+// command &>> file     # 標準出力/エラー出力を同一ファイルに追加書き込み
+// command >> file 2>&1 # 同上
+
+// command > file1 2> file2   # 標準出力,エラー出力を別々のファイルにリダイレクト
+// command >> file1 2>> file2 # 標準出力,エラー出力を別々のファイルに追加書き込み
+
+
+
 pub struct Parse {}
 impl Parse {
     fn parse_constant(input: &str) -> IResult<&str, Node> {
-        let (no_used, parsed) = nom::bytes::complete::is_not("\n ")(input)?;
+        let (no_used, parsed) = nom::bytes::complete::is_not("\n |")(input)?;
         Ok((
             no_used,
             Node::Identifier(Identifier::new(parsed.to_string())),
@@ -256,14 +305,39 @@ impl Parse {
         Ok((no_used, parsed))
     }
 
+    fn parse_pipeline(input: &str) -> IResult<&str, Node> {
+        let (no_used, parsed) = map(
+            permutation((
+                Self::parse_command,
+                many1(permutation((
+                    multispace0,
+                    tag("|"),
+                    multispace0,
+                    Self::parse_command,
+                ))),
+            )),
+            |(command, options)| {
+                let mut v: Vec<Node> = Vec::new();
+                v.push(command);
+                for opt in options {
+                    v.push(opt.3.clone());
+                }
+                Node::Pipeline(Pipeline::new(v))
+            },
+        )(input)?;
+        Ok((no_used, parsed))
+    }
+
     fn parse_statement(input: &str) -> IResult<&str, Node> {
         let (no_used, parsed) = alt((
             Self::parse_exec_script,
             Self::parse_define,
+            Self::parse_pipeline,
             Self::parse_command,
         ))(input)?;
         Ok((no_used, parsed))
     }
+
     fn parse_compound_statement(input: &str) -> IResult<&str, Node> {
         let (no_used, parsed) = map(
             alt((
@@ -284,16 +358,54 @@ impl Parse {
         let (no_used, parsed) = Self::parse_compound_statement(input)?;
         Ok((no_used, parsed))
     }
-
-    pub fn parse_until_newline(input: &str) -> IResult<&str, Vec<Node>> {
-        let (no_used, parsed) = many0(terminated(Self::parse_statement, line_ending))(input)?;
-        Ok((no_used, parsed))
-    }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
+    fn test_parse_pipeline() {
+        let input = "command1 | command2";
+        let expected = Node::Pipeline(Pipeline::new(vec![
+            Node::CommandStatement(Box::new(CommandStatement::new(
+                Node::Identifier(Identifier::new("command1".to_string())),
+                vec![],
+            ))),
+            Node::CommandStatement(Box::new(CommandStatement::new(
+                Node::Identifier(Identifier::new("command2".to_string())),
+                vec![],
+            ))),
+        ]));
+        let result = Parse::parse_pipeline(input).unwrap().1;
+        assert_eq!(result, expected);
+
+        let input = "command1 arg1 | command2 arg2";
+        let expected = Node::Pipeline(Pipeline::new(vec![
+            Node::CommandStatement(Box::new(CommandStatement::new(
+                Node::Identifier(Identifier::new("command1".to_string())),
+                vec![Node::Identifier(Identifier::new("arg1".to_string()))],
+            ))),
+            Node::CommandStatement(Box::new(CommandStatement::new(
+                Node::Identifier(Identifier::new("command2".to_string())),
+                vec![Node::Identifier(Identifier::new("arg2".to_string()))],
+            ))),
+        ]));
+        let result = Parse::parse_pipeline(input).unwrap().1;
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_filename() {
+        let input = "filename";
+        let expected = Node::Identifier(Identifier::new("filename".to_string()));
+        let result = Parse::parse_filename(input).unwrap().1;
+        assert_eq!(result, expected);
+
+        let input = "file.name";
+        let expected = Node::Identifier(Identifier::new("file.name".to_string()));
+        let result = Parse::parse_filename(input).unwrap().1;
+        assert_eq!(result, expected);
+    }
     fn test_parse_constant() {
         let input = "constant";
         let expected = Node::Identifier(Identifier::new("constant".to_string()));
@@ -367,6 +479,45 @@ mod tests {
             Node::Identifier(Identifier::new("value".to_string())),
         )));
         let result = Parse::parse_define(input).unwrap().1;
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn parse_pipeline() {
+        let input = "cmd1 | cmd2 | cmd3";
+        let expected = Node::Pipeline(Pipeline::new(vec![
+            Node::CommandStatement(Box::new(CommandStatement::new(
+                Node::Identifier(Identifier::new("cmd1".to_string())),
+                vec![],
+            ))),
+            Node::CommandStatement(Box::new(CommandStatement::new(
+                Node::Identifier(Identifier::new("cmd2".to_string())),
+                vec![],
+            ))),
+            Node::CommandStatement(Box::new(CommandStatement::new(
+                Node::Identifier(Identifier::new("cmd3".to_string())),
+                vec![],
+            ))),
+        ]));
+        let result = Parse::parse_pipeline(input).unwrap().1;
+        assert_eq!(result, expected);
+
+        let input = "cmd1 arg1 | cmd2 arg2 | cmd3 arg3";
+        let expected = Node::Pipeline(Pipeline::new(vec![
+            Node::CommandStatement(Box::new(CommandStatement::new(
+                Node::Identifier(Identifier::new("cmd1".to_string())),
+                vec![Node::Identifier(Identifier::new("arg1".to_string()))],
+            ))),
+            Node::CommandStatement(Box::new(CommandStatement::new(
+                Node::Identifier(Identifier::new("cmd2".to_string())),
+                vec![Node::Identifier(Identifier::new("arg2".to_string()))],
+            ))),
+            Node::CommandStatement(Box::new(CommandStatement::new(
+                Node::Identifier(Identifier::new("cmd3".to_string())),
+                vec![Node::Identifier(Identifier::new("arg3".to_string()))],
+            ))),
+        ]));
+        let result = Parse::parse_pipeline(input).unwrap().1;
         assert_eq!(result, expected);
     }
 

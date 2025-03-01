@@ -8,11 +8,12 @@ use nix::sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal
 use colored::Colorize;
 use crossterm::{
     cursor::{MoveLeft, MoveRight, MoveTo, MoveToColumn, SetCursorStyle},
-    event::{read, Event, KeyCode, KeyEvent},
+    event::{poll, read, Event, KeyCode, KeyEvent},
     execute,
     style::{Color, Print, SetForegroundColor},
     terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType},
 };
+use std::time::Duration;
 use std::{
     env, fs,
     io::{stdout, Write},
@@ -423,6 +424,7 @@ impl Rsh {
             self.eprintln(&format!("Failed to move cursor: {}", e));
         }
     }
+
     pub fn move_cursor_left(
         &mut self,
         stdout: &mut std::io::Stdout,
@@ -674,6 +676,7 @@ impl Rsh {
             sigaction(Signal::SIGTTOU, &sa).unwrap();
         }
     }
+
     pub fn rsh_loop(&mut self) -> Result<Status, RshError> {
         let mut stdout = stdout();
 
@@ -729,113 +732,123 @@ impl Rsh {
                         // 文字が入力ごとにループが回る
 
                         // キー入力の取得
-                        if let Ok(Event::Key(KeyEvent {
-                            code,
-                            modifiers: _,
-                            kind: _,
-                            state: _,
-                        })) = read()
-                        {
-                            match code {
-                                KeyCode::Esc => {
-                                    self.now_mode = Mode::Nomal;
-                                    break;
-                                }
-                                KeyCode::Tab => {
-                                    if !pushed_tab {
-                                        // 現時点で入力されている文字のバックアップ
-                                        stack_buffer = self.buffer.buffer.clone();
+                        if poll(Duration::from_millis(5)).map_err(|_| RshError::new("Failed to poll"))? {
+                            if let Ok(Event::Key(KeyEvent {
+                                code,
+                                modifiers: _,
+                                kind: _,
+                                state: _,
+                            })) = read()
+                            {
+                                match code {
+                                    KeyCode::Esc => {
+                                        self.now_mode = Mode::Nomal;
+                                        break;
                                     }
-                                    // コマンドDBの取得
-                                    self.get_executable_commands();
-                                    self.get_directory_contents("./");
-                                    self.get_rshhistory_contents().unwrap();
+                                    KeyCode::Tab => {
+                                        if !pushed_tab {
+                                            // 現時点で入力されている文字のバックアップ
+                                            stack_buffer = self.buffer.buffer.clone();
+                                        }
+                                        // コマンドDBの取得
+                                        self.get_executable_commands();
+                                        self.get_directory_contents("./");
+                                        self.get_rshhistory_contents().unwrap();
 
-                                    // 予測されるコマンドを取得
-                                    if let Ok(autocomplete) =
-                                        self.rsh_char_search(stack_buffer.clone(), &mut tab_counter)
-                                    {
-                                        self.buffer.buffer = autocomplete;
+                                        // 予測されるコマンドを取得
+                                        if let Ok(autocomplete) = self
+                                            .rsh_char_search(stack_buffer.clone(), &mut tab_counter)
+                                        {
+                                            self.buffer.buffer = autocomplete;
+                                        }
+
+                                        self.cursor_x = self.buffer.buffer.len();
+                                        self.char_count = self.buffer.buffer.chars().count();
+
+                                        pushed_tab = true;
+                                        tab_counter += 1;
                                     }
-
-                                    self.cursor_x = self.buffer.buffer.len();
-                                    self.char_count = self.buffer.buffer.chars().count();
-
-                                    pushed_tab = true;
-                                    tab_counter += 1;
-                                }
-                                KeyCode::Enter => {
-                                    self.cursor_x = 0;
-                                    self.char_count = 0;
-                                    break;
-                                }
-                                KeyCode::Char(' ') => {
-                                    // TABの直後にSpaceが入力された場合
-                                    self.buffer.buffer.insert(self.cursor_x, ' ');
-                                    pushed_tab = false;
-                                    self.cursor_x += 1;
-                                    self.char_count += 1;
-                                }
-                                _ => {
-                                    self.buffer.buffer = match code {
-                                        KeyCode::Backspace => {
-                                            // カーソルがバッファの範囲内にある場合
-                                            if self.char_count <= self.buffer.buffer.len()
-                                                && self.cursor_x > 0
-                                            {
-                                                // 要素を削除
-                                                if self
-                                                    .buffer
-                                                    .buffer
-                                                    .is_char_boundary(self.cursor_x - 1)
+                                    KeyCode::Enter => {
+                                        self.cursor_x = 0;
+                                        self.char_count = 0;
+                                        break;
+                                    }
+                                    KeyCode::Char(' ') => {
+                                        // TABの直後にSpaceが入力された場合
+                                        self.buffer.buffer.insert(self.cursor_x, ' ');
+                                        pushed_tab = false;
+                                        self.cursor_x += 1;
+                                        self.char_count += 1;
+                                    }
+                                    _ => {
+                                        self.buffer.buffer = match code {
+                                            KeyCode::Backspace => {
+                                                // カーソルがバッファの範囲内にある場合
+                                                if self.char_count <= self.buffer.buffer.len()
+                                                    && self.cursor_x > 0
                                                 {
-                                                    self.buffer.buffer.remove(self.cursor_x - 1);
+                                                    // 要素を削除
+                                                    if self
+                                                        .buffer
+                                                        .buffer
+                                                        .is_char_boundary(self.cursor_x - 1)
+                                                    {
+                                                        self.buffer
+                                                            .buffer
+                                                            .remove(self.cursor_x - 1);
+                                                    } else {
+                                                        // それ以外
+                                                        let mut buffer_graphemes = self
+                                                            .buffer
+                                                            .buffer
+                                                            .graphemes(true)
+                                                            .collect::<Vec<&str>>();
+                                                        buffer_graphemes
+                                                            .remove(self.char_count - 1);
+                                                        self.buffer.buffer =
+                                                            buffer_graphemes.concat();
+                                                        //isnt_ascii_counter -= 1;
+                                                        self.cursor_x -= 2;
+                                                    }
+                                                    // cursor_xはマルチバイト文字がある場合マルチバイト文字の数 *3 + 普通の文字数 = char_countになる
+                                                    // git commit -m "fix: 日本語 まで入力して削除しようとすると計算が合わなくなる
+                                                    // char_count と　cursor_xの釣り合いが取れない
+                                                    // cursor_xがきちんとマイナスされていない？
+                                                    // char_countがきちんとプラスされていない？
+                                                    self.cursor_x -= 1;
+                                                    self.char_count -= 1;
+                                                }
+                                                self.buffer.buffer.clone()
+                                            }
+                                            KeyCode::Char(c) => {
+                                                self.char_count += 1;
+                                                if c.is_ascii() {
+                                                    self.buffer.buffer.insert(self.cursor_x, c);
+                                                    self.cursor_x += 1;
                                                 } else {
-                                                    // それ以外
-                                                    let mut buffer_graphemes = self
-                                                        .buffer
-                                                        .buffer
-                                                        .graphemes(true)
-                                                        .collect::<Vec<&str>>();
-                                                    buffer_graphemes.remove(self.char_count - 1);
-                                                    self.buffer.buffer = buffer_graphemes.concat();
-                                                    //isnt_ascii_counter -= 1;
-                                                    self.cursor_x -= 2;
+                                                    let mut buf = [0; 4];
+                                                    let c_str = c.encode_utf8(&mut buf);
+                                                    for ch in c_str.chars() {
+                                                        self.buffer
+                                                            .buffer
+                                                            .insert(self.cursor_x, ch);
+                                                        self.cursor_x += c_str.len();
+                                                        // 全角文字の場合は文字のとる幅から余分な文を減らすためカウンタを増やす
+                                                        //isnt_ascii_counter += 1;
+                                                    }
                                                 }
-                                                // cursor_xはマルチバイト文字がある場合マルチバイト文字の数 *3 + 普通の文字数 = char_countになる
-                                                // git commit -m "fix: 日本語 まで入力して削除しようとすると計算が合わなくなる
-                                                // char_count と　cursor_xの釣り合いが取れない
-                                                // cursor_xがきちんとマイナスされていない？
-                                                // char_countがきちんとプラスされていない？
-                                                self.cursor_x -= 1;
-                                                self.char_count -= 1;
+                                                self.buffer.buffer.clone()
                                             }
-                                            self.buffer.buffer.clone()
-                                        }
-                                        KeyCode::Char(c) => {
-                                            self.char_count += 1;
-                                            if c.is_ascii() {
-                                                self.buffer.buffer.insert(self.cursor_x, c);
-                                                self.cursor_x += 1;
-                                            } else {
-                                                let mut buf = [0; 4];
-                                                let c_str = c.encode_utf8(&mut buf);
-                                                for ch in c_str.chars() {
-                                                    self.buffer.buffer.insert(self.cursor_x, ch);
-                                                    self.cursor_x += c_str.len();
-                                                    // 全角文字の場合は文字のとる幅から余分な文を減らすためカウンタを増やす
-                                                    //isnt_ascii_counter += 1;
-                                                }
+                                            _ => {
+                                                execute!(stdout, Print("other\n")).unwrap();
+                                                "".to_string()
                                             }
-                                            self.buffer.buffer.clone()
-                                        }
-                                        _ => {
-                                            execute!(stdout, Print("other\n")).unwrap();
-                                            "".to_string()
-                                        }
-                                    };
+                                        };
+                                    }
                                 }
                             }
+                        } else {
+                            continue;
                         }
                         // コマンド実行履歴の中からbufferで始まるものを取得
                         let history_matches: Vec<String> = self
@@ -951,8 +964,6 @@ impl Rsh {
                     self.execute_commands(&mut buffer);
                     self.buffer.buffer.clear();
                     enable_raw_mode().unwrap();
-
-                    //execute!(stdout, MoveToColumn(0), Print(format!("{}\n", self.return_code).to_string())).unwrap();
                 }
 
                 Mode::Visual => {
@@ -1011,42 +1022,3 @@ impl Drop for Rsh {
         .unwrap();
     }
 }
-
-/*
-    #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_execute_commands_valid() {
-        let mut rsh = Rsh::new();
-        rsh.buffer.buffer = "echo Hello, world!".to_string();
-        let return_code = rsh.execute_commands();
-        assert_eq!(return_code, 0);
-    }
-
-    #[test]
-    fn test_execute_commands_invalid() {
-        let mut rsh = Rsh::new();
-        rsh.buffer.buffer = "invalid_command".to_string();
-        let return_code = rsh.execute_commands();
-        assert_eq!(return_code, 1);
-    }
-
-    #[test]
-    fn test_execute_commands_empty() {
-        let mut rsh = Rsh::new();
-        rsh.buffer.buffer = "".to_string();
-        let return_code = rsh.execute_commands();
-        assert_eq!(return_code, 1);
-    }
-
-    #[test]
-    fn test_execute_commands_with_args() {
-        let mut rsh = Rsh::new();
-        rsh.buffer.buffer = "echo \"Hello, world!\" -n".to_string();
-        let return_code = rsh.execute_commands();
-        assert_eq!(return_code, 0);
-    }
-}
-*/

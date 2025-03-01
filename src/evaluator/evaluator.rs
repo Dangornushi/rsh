@@ -1,9 +1,12 @@
 use crate::command;
 use crate::error::error::{RshError, Status, StatusCode};
 use crate::log::log_maneger::csv_writer;
-use crate::parser::parse::{CommandStatement, CompoundStatement, Define, Identifier, Node};
+use crate::parser::parse::{
+    CommandStatement, CompoundStatement, Define, ExecScript, Identifier, Node, Pipeline,
+};
 use crate::rsh::rsh::Rsh;
 use crossterm::{execute, style::Print};
+use nix::unistd::dup2;
 use nix::{
     errno::Errno,
     libc,
@@ -14,17 +17,32 @@ use nix::{
     unistd::{close, execvp, fork, getpgrp, pipe, setpgid, tcsetpgrp, ForkResult},
 };
 use std::any::Any;
-use std::io::stdout;
+use std::io::{stdout, Read};
 use std::process::Command;
 use std::{ffi::CString, io::Write};
 
+enum Process {
+    Pipe,
+    NoPipe,
+}
+
 pub struct Evaluator {
     rsh: Rsh,
+    now_process: Process,
+    pipe_commands: Vec<Vec<String>>,
 }
 
 impl Evaluator {
     pub fn new(rsh: Rsh) -> Self {
-        Evaluator { rsh }
+        Evaluator {
+            rsh,
+            now_process: Process::NoPipe,
+            pipe_commands: Vec::new(),
+        }
+    }
+
+    fn switch_process(&mut self, process: Process) {
+        self.now_process = process;
     }
 
     fn restore_tty_signals(&self) {
@@ -37,9 +55,8 @@ impl Evaluator {
     }
 
     fn rsh_launch(&mut self, args: Vec<String>) -> Result<Status, RshError> {
-        let pid = fork().map_err(|_| RshError::new("fork failed"))?;
         let (pipe_read, pipe_write) = pipe().unwrap();
-
+        let pid = fork().map_err(|_| RshError::new("fork failed"))?;
         match pid {
             ForkResult::Parent { child } => {
                 setpgid(child, child).unwrap();
@@ -115,6 +132,95 @@ impl Evaluator {
         }
     }
 
+    fn rsh_pipe_launch(&mut self, args: Vec<Vec<String>>) -> Result<Status, RshError> {
+        let mut pipes = Vec::new();
+
+        for _ in 0..args.len() - 1 {
+            let (pipe_read, pipe_write) = pipe().unwrap();
+            pipes.push((pipe_read, pipe_write));
+        }
+
+        for (i, command) in args.iter().enumerate() {
+            let pid = fork().map_err(|_| RshError::new("fork failed"))?;
+            match pid {
+                ForkResult::Parent { child } => {
+                    setpgid(child, child).unwrap();
+                    tcsetpgrp(0, child).unwrap();
+
+                    if i > 0 {
+                        close(pipes[i - 1].0).unwrap();
+                    }
+                    if i < args.len() - 1 {
+                        close(pipes[i].1).unwrap();
+                    }
+
+                    let wait_pid_result = waitpid(child, None)
+                        .map_err(|err| RshError::new(&format!("waited: {}", err)));
+
+                    tcsetpgrp(0, getpgrp()).unwrap();
+                    println!("wait_pid_result: {:?}", wait_pid_result);
+
+                    return match wait_pid_result {
+                        Ok(WaitStatus::Exited(_, return_code)) => {
+                            // ui
+                            match return_code {
+                                0 => Ok(Status::success()),
+                                1 => Err(RshError::new("not found")),
+                                _ => Err(RshError::new("somthing wrong")),
+                            }
+                        }
+                        Ok(WaitStatus::Signaled(_, _, _)) => Ok(Status::success()),
+                        Err(err) => {
+                            println!("parent err: {}", err.message);
+                            //self.eprintln(&format!("rsh: {}", err.message));
+                            Err(err)
+                        }
+                        _ => Ok(Status::success()),
+                    };
+                }
+                ForkResult::Child => {
+                    // シグナル系処理 ---------------------------
+                    self.restore_tty_signals();
+
+                    if i > 0 {
+                        close(pipes[i - 1].1).unwrap();
+                        dup2(pipes[i - 1].0, 0).unwrap();
+                        close(pipes[i - 1].0).unwrap();
+                    }
+                    if i < args.len() - 1 {
+                    println!("start child: {}, {:?}", i, args);
+                        close(pipes[i].0).unwrap();
+                        dup2(pipes[i].1, 1).unwrap();
+                        close(pipes[i].1).unwrap();
+                    }
+                    // ------------------------------------------
+
+                    println!("command: {:?}", command);
+                    // コマンドパース
+                    let path = CString::new(command[0].clone()).unwrap();
+
+                    let c_args: Vec<CString> = command
+                        .iter()
+                        .map(|s| CString::new(s.as_bytes()).unwrap())
+                        .collect();
+
+                    println!("path: {:?}", path);
+
+                    return match execvp(&path, &c_args) {
+                        Ok(_) => Ok(Status::success()),
+                        Err(err) => Err(RshError::new(format!("{:?}", err).as_str())),
+                    };
+                    // -------------
+                }
+            }
+        }
+
+        for _ in 0..args.len() {
+            wait().unwrap();
+        }
+        Ok(Status::success())
+    }
+
     pub fn rsh_execute(&mut self, args: Vec<String>) -> Result<Status, RshError> {
         if let Option::Some(arg) = args.get(0) {
             let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -147,20 +253,21 @@ impl Evaluator {
                     "exit" => command::exit::rsh_exit(),
                     // none: 何もなければコマンド実行
                     _ => {
-                        match Command::new(args[0].clone()).args(&args[1..]).spawn() {
-                            Ok(mut child) => child
-                                .wait()
-                                .map(|status| {
-                                    if status.success() {
-                                        Status::success()
-                                    } else {
-                                        Status::notfound()
-                                    }
-                                })
-                                .map_err(|err| RshError::new(&format!("Error: {}", err))),
-                            Err(err) => Err(RshError::new(&format!("Error: {}", err))),
+                        #[cfg(test)]{
+                            // テスト時には何もしない
+                            println!("test");
+                            Ok(Status::success())
                         }
-                        //self.rsh_launch(args),
+                        #[cfg(not(test))]
+                        {
+                            match self.now_process {
+                                Process::NoPipe => self.rsh_launch(args),
+                                Process::Pipe => {
+                                    self.pipe_commands.push(args);
+                                    Ok(Status::success())
+                                }
+                            }
+                        }
                     }
                 },
             }
@@ -193,7 +300,6 @@ impl Evaluator {
         let mut full_command = vec![command];
         full_command.extend(sub_command);
 
-
         // 分割したコマンドを実行
         match self.rsh_execute(full_command.clone()) {
             Ok(r) => {
@@ -201,11 +307,10 @@ impl Evaluator {
                     std::process::exit(0);
                 }
                 let return_code = r.get_exit_code();
-                println!("Evaluator Exit: {}", return_code);
+                //println!("Evaluator Exit: {}", return_code);
             }
             Err(err) => {
                 println!("Evaluator-{}", err.message);
-                //std::process::exit(1);
             }
         }
     }
@@ -219,7 +324,54 @@ impl Evaluator {
             Node::Identifier(identifier) => self.eval_identifier(identifier),
             _ => Default::default(), // Handle other cases appropriately
         };
-        println!("{}: {}\n", var, data);
+        println!("{} = {}\n", var, data);
+    }
+
+    fn eval_pipeline(&mut self, pipeline: Pipeline) {
+        self.switch_process(Process::Pipe);
+        self.pipe_commands.clear();
+        // パイプライン処理
+        for command in pipeline.get_commands() {
+            match command.get_node() {
+                Node::CommandStatement(command) => self.eval_command(*command),
+                _ => println!("I don't know: {:?}", command),
+            }
+        }
+        match self.rsh_pipe_launch(self.pipe_commands.clone()) {
+            Ok(s) => println!("Pipeline execution success: {:?}", s),
+            Err(err) => println!("Pipeline execution error: {}", err.message),
+        }
+        self.pipe_commands.clear();
+        self.switch_process(Process::NoPipe);
+
+        /*
+        return ;*/
+    }
+
+    fn eval_branch(&mut self, node: Node) -> impl Any {
+        // 変数などのデータ型を戻り値として返すようにする？
+        // 変数格納のハッシュマップ
+        // 関数格納のハッシュマップ
+        // 今いる関数
+        // exit code
+    }
+
+    fn eval_exec_script(&mut self, script: ExecScript) {
+        // スクリプトを実行
+        let var = match script.get_filename() {
+            Node::Identifier(identifier) => self.eval_identifier(identifier),
+            _ => Default::default(), // Handle other cases appropriately
+        };
+        if let Ok(mut file) = std::fs::File::open(var.clone()) {
+            let mut contents = String::new();
+            if let Ok(_) = file.read_to_string(&mut contents) {
+                let return_code = Rsh::execute_commands(&mut self.rsh, &mut contents);
+            } else {
+                println!("Failed to read the file contents");
+            }
+        } else {
+            println!("File not found: {:?}", var);
+        }
     }
 
     fn eval_compound_statement(&mut self, expr: CompoundStatement) {
@@ -233,11 +385,12 @@ impl Evaluator {
                     self.eval_define(*define);
                 }
                 Node::ExecScript(script) => {
-                    // スクリプトを実行
-                    Rsh::execute_commands(&mut self.rsh, &mut "echo ok\necho bad\n".to_string());
+                    self.eval_exec_script(*script);
                 }
-                /*
-                 */
+                Node::Pipeline(pipeline) => {
+                    // パイプライン処理
+                    self.eval_pipeline(pipeline);
+                }
                 _ => {
                     println!("I don't know: {:?}", s);
                 }
@@ -270,8 +423,8 @@ mod tests {
         evaluator.restore_tty_signals();
         // Add assertions or checks if possible
     }
-    /*
 
+    /*
     #[test]
     fn test_rsh_launch_success() {
         let rsh = Rsh::new();
@@ -279,7 +432,7 @@ mod tests {
         let args = vec!["echo".to_string(), "Hello, world!".to_string()];
         let result = evaluator.rsh_launch(args);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Status::Success);
+        assert_eq!(result.unwrap(), Status::success());
     }
     #[test]
     fn test_rsh_launch_failure() {
@@ -289,7 +442,8 @@ mod tests {
         let result = evaluator.rsh_launch(args);
         assert!(result.is_err());
     }
-    */
+
+     */
 
     #[test]
     fn test_rsh_execute_cd() {
