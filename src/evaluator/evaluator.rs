@@ -5,6 +5,15 @@ use crate::parser::parse::{
     CommandStatement, CompoundStatement, Define, ExecScript, Identifier, Node, Pipeline,
 };
 use crate::rsh::rsh::Rsh;
+
+use std::any::Any;
+use std::fs::File;
+use std::io::{self, ErrorKind};
+use std::io::{stdout, Read};
+use std::os::unix::io::{FromRawFd, IntoRawFd};
+use std::process::{Child, Command, Stdio};
+use std::{ffi::CString, io::Write};
+
 use crossterm::{execute, style::Print};
 use nix::unistd::dup2;
 use nix::{
@@ -16,10 +25,6 @@ use nix::{
     },
     unistd::{close, execvp, fork, getpgrp, pipe, setpgid, tcsetpgrp, ForkResult},
 };
-use std::any::Any;
-use std::io::{stdout, Read};
-use std::process::Command;
-use std::{ffi::CString, io::Write};
 
 enum Process {
     Pipe,
@@ -132,93 +137,55 @@ impl Evaluator {
         }
     }
 
-    fn rsh_pipe_launch(&mut self, args: Vec<Vec<String>>) -> Result<Status, RshError> {
-        let mut pipes = Vec::new();
+    fn run(&mut self, commands: Vec<String>, std_in: Stdio, std_out: Stdio) -> io::Result<Child> {
+        println!("run: {:?}", commands);
+        Command::new(commands[0].clone())
+            .args(&commands[1..])
+            .stdin(std_in)
+            .stdout(std_out)
+            .spawn()
 
-        for _ in 0..args.len() - 1 {
-            let (pipe_read, pipe_write) = pipe().unwrap();
-            pipes.push((pipe_read, pipe_write));
+        /*
+
+        match
+        {
+            Ok(mut child) => child
+                .wait()
+                .map(|status| {
+                    if status.success() {
+                        Status::success()
+                    } else {
+                        Status::notfound()
+                    }
+                })
+                .map_err(|err| RshError::new(&format!("Error: {}", err))),
+            Err(err) => Err(RshError::new(&format!("Error: {}", err))),
         }
+            */
+    }
 
-        for (i, command) in args.iter().enumerate() {
-            let pid = fork().map_err(|_| RshError::new("fork failed"))?;
-            match pid {
-                ForkResult::Parent { child } => {
-                    setpgid(child, child).unwrap();
-                    tcsetpgrp(0, child).unwrap();
-
-                    if i > 0 {
-                        close(pipes[i - 1].0).unwrap();
-                    }
-                    if i < args.len() - 1 {
-                        close(pipes[i].1).unwrap();
-                    }
-
-                    let wait_pid_result = waitpid(child, None)
-                        .map_err(|err| RshError::new(&format!("waited: {}", err)));
-
-                    tcsetpgrp(0, getpgrp()).unwrap();
-                    println!("wait_pid_result: {:?}", wait_pid_result);
-
-                    return match wait_pid_result {
-                        Ok(WaitStatus::Exited(_, return_code)) => {
-                            // ui
-                            match return_code {
-                                0 => Ok(Status::success()),
-                                1 => Err(RshError::new("not found")),
-                                _ => Err(RshError::new("somthing wrong")),
-                            }
-                        }
-                        Ok(WaitStatus::Signaled(_, _, _)) => Ok(Status::success()),
-                        Err(err) => {
-                            println!("parent err: {}", err.message);
-                            //self.eprintln(&format!("rsh: {}", err.message));
-                            Err(err)
-                        }
-                        _ => Ok(Status::success()),
-                    };
-                }
-                ForkResult::Child => {
-                    // シグナル系処理 ---------------------------
-                    self.restore_tty_signals();
-
-                    if i > 0 {
-                        close(pipes[i - 1].1).unwrap();
-                        dup2(pipes[i - 1].0, 0).unwrap();
-                        close(pipes[i - 1].0).unwrap();
-                    }
-                    if i < args.len() - 1 {
-                    println!("start child: {}, {:?}", i, args);
-                        close(pipes[i].0).unwrap();
-                        dup2(pipes[i].1, 1).unwrap();
-                        close(pipes[i].1).unwrap();
-                    }
-                    // ------------------------------------------
-
-                    println!("command: {:?}", command);
-                    // コマンドパース
-                    let path = CString::new(command[0].clone()).unwrap();
-
-                    let c_args: Vec<CString> = command
-                        .iter()
-                        .map(|s| CString::new(s.as_bytes()).unwrap())
-                        .collect();
-
-                    println!("path: {:?}", path);
-
-                    return match execvp(&path, &c_args) {
-                        Ok(_) => Ok(Status::success()),
-                        Err(err) => Err(RshError::new(format!("{:?}", err).as_str())),
-                    };
-                    // -------------
+    fn rsh_pipe_launch(
+        &mut self,
+        args: Vec<Vec<String>>,
+        si: Stdio,
+        stdout: Stdio,
+    ) -> io::Result<Child> {
+        let mut itr = args.into_iter().peekable();
+        let mut std_in = si;
+        unsafe {
+            while let Some(command) = itr.next() {
+                if itr.peek().is_some() {
+                    // 次にコマンドがアル場合パイプ処理を行う
+                    let process = self.run(command, std_in, Stdio::piped());
+                    std_in = Stdio::from_raw_fd(process.unwrap().stdout.unwrap().into_raw_fd());
+                    // プロセスの標準出力を次のプロセスの標準入力にする
+                } else {
+                    // 一つだけのコマンドを行う
+                    return self.run(command, std_in, stdout);
                 }
             }
         }
-
-        for _ in 0..args.len() {
-            wait().unwrap();
-        }
-        Ok(Status::success())
+        unreachable!();
     }
 
     pub fn rsh_execute(&mut self, args: Vec<String>) -> Result<Status, RshError> {
@@ -253,7 +220,8 @@ impl Evaluator {
                     "exit" => command::exit::rsh_exit(),
                     // none: 何もなければコマンド実行
                     _ => {
-                        #[cfg(test)]{
+                        #[cfg(test)]
+                        {
                             // テスト時には何もしない
                             println!("test");
                             Ok(Status::success())
@@ -337,10 +305,11 @@ impl Evaluator {
                 _ => println!("I don't know: {:?}", command),
             }
         }
-        match self.rsh_pipe_launch(self.pipe_commands.clone()) {
-            Ok(s) => println!("Pipeline execution success: {:?}", s),
-            Err(err) => println!("Pipeline execution error: {}", err.message),
-        }
+        self.rsh_pipe_launch(
+            self.pipe_commands.clone(),
+            Stdio::inherit(),
+            Stdio::inherit(),
+        );
         self.pipe_commands.clear();
         self.switch_process(Process::NoPipe);
 
