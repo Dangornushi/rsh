@@ -833,15 +833,12 @@ impl Rsh {
                                                             .buffer
                                                             .insert(self.cursor_x, ch);
                                                         self.cursor_x += c_str.len();
-                                                        // 全角文字の場合は文字のとる幅から余分な文を減らすためカウンタを増やす
-                                                        //isnt_ascii_counter += 1;
                                                     }
                                                 }
                                                 self.buffer.buffer.clone()
                                             }
                                             _ => {
-                                                execute!(stdout, Print("other\n")).unwrap();
-                                                "".to_string()
+                                                self.buffer.buffer.clone()
                                             }
                                         };
                                     }

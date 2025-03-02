@@ -138,30 +138,11 @@ impl Evaluator {
     }
 
     fn run(&mut self, commands: Vec<String>, std_in: Stdio, std_out: Stdio) -> io::Result<Child> {
-        println!("run: {:?}", commands);
         Command::new(commands[0].clone())
             .args(&commands[1..])
             .stdin(std_in)
             .stdout(std_out)
             .spawn()
-
-        /*
-
-        match
-        {
-            Ok(mut child) => child
-                .wait()
-                .map(|status| {
-                    if status.success() {
-                        Status::success()
-                    } else {
-                        Status::notfound()
-                    }
-                })
-                .map_err(|err| RshError::new(&format!("Error: {}", err))),
-            Err(err) => Err(RshError::new(&format!("Error: {}", err))),
-        }
-            */
     }
 
     fn rsh_pipe_launch(
@@ -305,11 +286,19 @@ impl Evaluator {
                 _ => println!("I don't know: {:?}", command),
             }
         }
-        self.rsh_pipe_launch(
+        match self.rsh_pipe_launch(
             self.pipe_commands.clone(),
             Stdio::inherit(),
             Stdio::inherit(),
-        );
+        ) {
+            Ok(mut child) => {
+                let _ = child.wait();
+            }
+            Err(err) => {
+                println!("Error: {}", err);
+            }
+        };
+
         self.pipe_commands.clear();
         self.switch_process(Process::NoPipe);
 
