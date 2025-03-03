@@ -302,8 +302,6 @@ impl Evaluator {
         self.pipe_commands.clear();
         self.switch_process(Process::NoPipe);
 
-        /*
-        return ;*/
     }
 
     fn eval_branch(&mut self, node: Node) -> impl Any {
@@ -349,6 +347,7 @@ impl Evaluator {
                     // パイプライン処理
                     self.eval_pipeline(pipeline);
                 }
+                Node::Comment(_) => {},
                 _ => {
                     println!("I don't know: {:?}", s);
                 }
