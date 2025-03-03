@@ -217,14 +217,14 @@ impl ExecScript {
 pub struct Parse {}
 impl Parse {
     fn parse_comment(input: &str) -> IResult<&str, Node> {
-        let (no_used, parsed) = map(preceded(tag("#"), not_line_ending), |parsed:&str| {
+        let (no_used, parsed) = map(preceded(tag("#"), not_line_ending), |parsed: &str| {
             Node::Comment(Comment::new(parsed.to_string()))
         })(input)?;
         Ok((no_used, parsed))
     }
 
     fn parse_constant(input: &str) -> IResult<&str, Node> {
-        let (no_used, parsed) = nom::bytes::complete::is_not("\n |=")(input)?;
+        let (no_used, parsed) = nom::bytes::complete::is_not("\n |=#")(input)?;
         Ok((
             no_used,
             Node::Identifier(Identifier::new(parsed.to_string())),
@@ -289,6 +289,7 @@ impl Parse {
                 opt(many1(permutation((
                     take_while(|c| c == ' '),
                     alt((
+
                         Self::parse_identifier, // "に囲まれている文字列
                         Self::parse_constant,
                     )),
@@ -348,21 +349,26 @@ impl Parse {
     }
 
     fn parse_statement(input: &str) -> IResult<&str, Node> {
-        let (no_used, parsed) = alt((
-            Self::parse_comment,
-            Self::parse_exec_script,
-            Self::parse_define,
-            Self::parse_pipeline,
-            Self::parse_command,
-        ))(input)?;
-        Ok((no_used, parsed))
+        let (no_used, parsed) = permutation((
+                multispace0,
+                alt((
+                Self::parse_comment,
+                Self::parse_exec_script,
+                Self::parse_define,
+                Self::parse_pipeline,
+                Self::parse_command,
+            )),
+                multispace0,
+            ),
+        )(input)?;
+        Ok((no_used, parsed.1))
     }
 
     fn parse_compound_statement(input: &str) -> IResult<&str, Node> {
         let (no_used, parsed) = map(
             alt((
-                many1(terminated(Self::parse_statement, line_ending)),
-                many1(Self::parse_statement),
+                many1(terminated(Self::parse_statement, line_ending)), // 改行で終わる
+                many1(Self::parse_statement),                          // 単数コマンド
             )),
             |compound_statements| {
                 Node::CompoundStatement(CompoundStatement::new(compound_statements))
@@ -434,6 +440,8 @@ mod tests {
         let result = Parse::parse_filename(input).unwrap().1;
         assert_eq!(result, expected);
     }
+
+    #[test]
     fn test_parse_constant() {
         let input = "constant";
         let expected = Node::Identifier(Identifier::new("constant".to_string()));
@@ -508,6 +516,23 @@ mod tests {
         assert_eq!(result, expected);
     }
 
+    #[test]
+    fn test_parse_comment() {
+        let input = "# comment";
+        let expected = Node::Comment(Comment::new(" comment".to_string()));
+        let result = Parse::parse_comment(input).unwrap().1;
+        assert_eq!(result, expected);
+        let input = "# comment\necho ok";
+        let expected = Node::CompoundStatement(CompoundStatement::new(vec![
+            Node::Comment(Comment::new(" comment".to_string())),
+            Node::CommandStatement(Box::new(CommandStatement::new(
+                Node::Identifier(Identifier::new("echo".to_string())),
+                vec![Node::Identifier(Identifier::new("ok".to_string()))],
+            ))),
+        ]));
+        let result = Parse::parse_compound_statement(input).unwrap().1;
+        assert_eq!(result, expected);
+    }
     #[test]
     fn parse_pipeline() {
         let input = "cmd1 | cmd2 | cmd3";
