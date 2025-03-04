@@ -317,17 +317,17 @@ impl Parse {
             permutation((
                 Self::parse_constant,
                 many1(permutation((
-                    multispace0,
+                    nom::character::complete::space0,
                     opt(tag("\\")),
-                    multispace0,
+                    nom::character::complete::space0,
                     alt((
                         Self::parse_identifier, // "に囲まれている文字列
                         Self::parse_constant,
                     )),
-                    multispace0,
+                    nom::character::complete::space0,
                     opt(tag("\\")),
                 ))),
-                line_ending,
+                opt(line_ending),
             )),
             |(command, options, _)| {
                 let mut v: Vec<Node> = Vec::new();
@@ -656,7 +656,7 @@ mod tests {
 
     #[test]
     fn test_parse_compound_statement() {
-        let input = "echo\\\ncommand\n";
+        let input = "echo\ncommand";
         let expected = Node::CompoundStatement(CompoundStatement::new(vec![
             Node::CommandStatement(Box::new(CommandStatement::new(
                 Node::Identifier(Identifier::new("echo".to_string())),
