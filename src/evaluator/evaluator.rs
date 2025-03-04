@@ -260,6 +260,7 @@ impl Evaluator {
             }
             Err(err) => {
                 println!("Evaluator-{}", err.message);
+                std::process::exit(0);
             }
         }
     }
