@@ -1,8 +1,11 @@
 use nom::branch::{alt, permutation};
 use nom::bytes::complete::{tag, take_while};
-use nom::character::complete::{line_ending, multispace0, multispace1, not_line_ending};
+use nom::character::complete::{
+    alphanumeric0, line_ending, multispace0, multispace1, not_line_ending,
+};
 use nom::combinator::value;
 use nom::combinator::{map, opt};
+use nom::error::context;
 use nom::multi::{many0, many1};
 use nom::sequence::{preceded, terminated};
 use nom::IResult;
@@ -10,15 +13,22 @@ use nom::IResult;
 /// 任意の式を表す
 #[derive(Debug, PartialEq, Clone)]
 pub enum Node {
-    Expression(Box<Node>),
     CompoundStatement(CompoundStatement),
-    Statement(Statement),
     Define(Box<Define>),
     Comment(Comment),
     CommandStatement(Box<CommandStatement>),
     Pipeline(Pipeline),
+    RedirectInput(Box<RedirectInput>),
+    RedirectOutput(Box<RedirectOutput>),
+    Redirect(Box<Redirect>),
     ExecScript(Box<ExecScript>),
     Identifier(Identifier),
+}
+
+impl Default for Node {
+    fn default() -> Self {
+        Node::Identifier(Identifier::new(String::new()))
+    }
 }
 impl Node {
     /// 式を評価する
@@ -35,23 +45,18 @@ impl Node {
         self.clone()
     }
 
-    pub fn get_sub_command(&self) -> Vec<Node> {
+    pub fn get_lhs(&self) -> Node {
+        match self {
+            Node::CommandStatement(command) => command.get_command(),
+            _ => Default::default(),
+        }
+    }
+
+    pub fn get_rhs(&self) -> Vec<Node> {
         match self {
             Node::CommandStatement(command) => command.get_sub_command(),
             _ => Default::default(),
         }
-    }
-}
-
-#[derive(Debug, PartialEq, Clone)]
-struct Expression {
-    // 式の集合
-    node: Node,
-}
-impl Expression {
-    /// 生成する
-    pub fn new(val: Node) -> Expression {
-        Expression { node: val }
     }
 }
 
@@ -83,21 +88,6 @@ impl CompoundStatement {
         self.stmt.clone()
     }
 }
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct Statement(Vec<Node>);
-impl Statement {
-    pub fn new(val: Vec<Node>) -> Statement {
-        Statement(val)
-    }
-    pub fn from(val: Node) -> Statement {
-        Statement(Vec::from([val]))
-    }
-    pub fn eval(&self) -> Vec<Node> {
-        self.0.clone()
-    }
-}
-
 // 代入を表す
 #[derive(Debug, PartialEq, Clone)]
 pub struct Define {
@@ -136,6 +126,7 @@ impl CommandStatement {
         self.1.clone()
     }
 }
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct Pipeline(Vec<Node>);
 impl Pipeline {
@@ -150,7 +141,61 @@ impl Pipeline {
     }
 }
 
-/// 文字列を表す
+#[derive(Debug, PartialEq, Clone)]
+pub struct RedirectInput {
+    destination: Node,
+}
+impl RedirectInput {
+    pub fn new(destination: Node) -> RedirectInput {
+        RedirectInput {
+            destination: destination,
+        }
+    }
+
+    pub fn get_destination(&self) -> Node {
+        self.destination.clone()
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct RedirectOutput {
+    destination: Node,
+}
+impl RedirectOutput {
+    pub fn new(destination: Node) -> RedirectOutput {
+        RedirectOutput {
+            destination: destination,
+        }
+    }
+
+    pub fn get_destination(&self) -> Node {
+        self.destination.clone()
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct Redirect {
+    command: Node,
+    destination: Vec<Node>,
+}
+impl Redirect {
+    pub fn new(command: Node, destination: Vec<Node>) -> Redirect {
+        Redirect {
+            command: command,
+            destination: destination,
+        }
+    }
+
+    pub fn get_destination(&self) -> Vec<Node> {
+        self.destination.clone()
+    }
+
+    pub fn get_command(&self) -> Node {
+        self.command.clone()
+    }
+}
+
+// 文字列を表す
 #[derive(Debug, PartialEq, Clone)]
 pub struct Identifier(String);
 impl Identifier {
@@ -193,26 +238,49 @@ impl ExecScript {
     }
 }
 
-// パイプ
+// パイプ --------------------------------------------------------------------
 // command1 | command2  # command1の標準出力をcommand2の標準入力に渡す
 
 // 入力
 // command < file   # ファイルの内容をコマンドの標準入力に渡す
 
-// 出力
+// 出力 -------------------------------------------------------------------------
 // command >&2      # 標準出力を標準エラー出力にリダイレクト
-
 // command > file   # ファイル作成 or 上書き
 // command >> file  # 追加出力。ファイルがなければ作成
 // command 2> file  # 標準エラー出力をファイルにリダイレクト(作成 or 上書き)
-
 // command &> file      # 標準出力/エラー出力を同一ファイルにリダイレクト
+
 // command > file 2>&1  # 同上
 // command &>> file     # 標準出力/エラー出力を同一ファイルに追加書き込み
 // command >> file 2>&1 # 同上
 
 // command > file1 2> file2   # 標準出力,エラー出力を別々のファイルにリダイレクト
 // command >> file1 2>> file2 # 標準出力,エラー出力を別々のファイルに追加書き込み
+// ---------------------------------------------------------------------------
+
+// ----------------------------------------------------------------------------
+
+// メタ文字 -------------------------------------------------------------------
+// *	ファイル名マッチで0文字以上の任意文字列にマッチ
+// ?	ファイル名マッチで1文字の任意文字にマッチ
+// ~	ホームディレクトリ
+// #	コメント
+// \	メタ文字を無効化 (\メタ文字)
+// $	変数展開($FOO)
+// "	文字列("...$FOO..." では変数展開が行われる)
+// '	文字列('...$FOO...' では変数展開が行われない)
+// `	コマンド実行結果参照(`cmd`)
+// !	ヒストリ参照 (!number)
+// ;	コマンド区切り文字(cmd1 ; cmd2)
+// |	コマンドのの実行結果を次のコマンドに渡す(cmd1 | cmd2)
+// <	リダイレクト受信(cmd < file)
+// >	リダイレクト送信(cmd > file)
+// &	コマンドをバックグランド実行(cmd &)
+// ( )	コマンドをグループ化((cmd1; cmd2))
+// [ ]	if文等で使用するテストコマンド
+// { }	変数展開 (${FOO})
+// ----------------------------------------------------------------------------
 
 pub struct Parse {}
 impl Parse {
@@ -224,7 +292,7 @@ impl Parse {
     }
 
     fn parse_constant(input: &str) -> IResult<&str, Node> {
-        let (no_used, parsed) = nom::bytes::complete::is_not("\n \\|=#")(input)?;
+        let (no_used, parsed) = nom::bytes::complete::is_not("\n \\<>;|=#")(input)?;
         Ok((
             no_used,
             Node::Identifier(Identifier::new(parsed.to_string())),
@@ -232,10 +300,13 @@ impl Parse {
     }
 
     fn parse_identifier(input: &str) -> IResult<&str, Node> {
-        let (no_used, parsed) = alt((
-            nom::sequence::delimited(tag("\""), nom::bytes::complete::is_not("\""), tag("\"")),
-            nom::sequence::delimited(tag("'"), nom::bytes::complete::is_not("'"), tag("'")),
-        ))(input)?;
+        let (no_used, parsed) = context(
+            "parse_identifier",
+            alt((
+                nom::sequence::delimited(tag("\""), nom::bytes::complete::is_not("\""), tag("\"")),
+                nom::sequence::delimited(tag("'"), nom::bytes::complete::is_not("'"), tag("'")),
+            )),
+        )(input)?;
         Ok((
             no_used,
             Node::Identifier(Identifier::new(parsed.to_string())),
@@ -243,7 +314,7 @@ impl Parse {
     }
 
     fn parse_not_space(input: &str) -> IResult<&str, Node> {
-        let (no_used, parsed) = nom::bytes::complete::is_not(" ")(input)?;
+        let (no_used, parsed) = nom::bytes::complete::is_not("\n \\<>;|=#!\"$")(input)?;
         Ok((
             no_used,
             Node::Identifier(Identifier::new(parsed.to_string())),
@@ -287,15 +358,14 @@ impl Parse {
             permutation((
                 Self::parse_constant,
                 opt(many1(permutation((
-                    multispace0,
+                    take_while(|c: char| c == ' '),
                     alt((
                         Self::parse_identifier, // "に囲まれている文字列
                         Self::parse_constant,
                     )),
                 )))),
-                opt(line_ending),
             )),
-            |(command, options, _)| {
+            |(command, options)| {
                 if let Some(options) = options {
                     let mut v: Vec<Node> = Vec::new();
 
@@ -316,26 +386,26 @@ impl Parse {
         let (no_used, parsed) = map(
             permutation((
                 Self::parse_constant,
-                many1(permutation((
-                    nom::character::complete::space0,
-                    opt(tag("\\")),
-                    nom::character::complete::space0,
-                    alt((
-                        Self::parse_identifier, // "に囲まれている文字列
-                        Self::parse_constant,
+                many1(map(
+                    permutation((
+                        nom::character::complete::space0,
+                        opt(permutation((
+                            tag("\\"),
+                            opt(permutation((tag("  "), multispace0, Self::parse_comment))),
+                            nom::character::complete::space0,
+                            opt(tag("\n")),
+                        ))),
+                        nom::character::complete::space0,
+                        alt((
+                            Self::parse_identifier, // "に囲まれている文字列
+                            Self::parse_constant,
+                        )),
                     )),
-                    nom::character::complete::space0,
-                    opt(tag("\\")),
-                ))),
-                opt(line_ending),
+                    |(_, _, _, sub_command)| sub_command,
+                )),
             )),
-            |(command, options, _)| {
-                let mut v: Vec<Node> = Vec::new();
-
-                for opt in options {
-                    v.push(opt.3.clone());
-                }
-                Node::CommandStatement(Box::new(CommandStatement::new(command, v)))
+            |(command, options)| {
+                Node::CommandStatement(Box::new(CommandStatement::new(command, options)))
             },
         )(input)?;
 
@@ -378,11 +448,36 @@ impl Parse {
         Ok((no_used, parsed))
     }
 
+    fn parse_redirect_specifier(input: &str) -> IResult<&str, Node> {
+        let (no_used, parsed) = map(
+            permutation((
+                multispace0,
+                alt((tag("<"), tag(">"))),
+                multispace0,
+                Self::parse_filename,
+            )),
+            |(_, kind, _, filename)| match kind {
+                "<" => Node::RedirectInput(Box::new(RedirectInput::new(filename))),
+                ">" => Node::RedirectOutput(Box::new(RedirectOutput::new(filename))),
+                _ => unreachable!(),
+            },
+        )(input)?;
+        Ok((no_used, parsed))
+    }
+    fn parse_redirect(input: &str) -> IResult<&str, Node> {
+        let (no_used, parsed) = map(
+            permutation((Self::parse_command, many1(Self::parse_redirect_specifier))),
+            |(command, destination)| Node::Redirect(Box::new(Redirect::new(command, destination))),
+        )(input)?;
+        Ok((no_used, parsed))
+    }
+
     fn parse_statement(input: &str) -> IResult<&str, Node> {
         let (no_used, parsed) = permutation((
             multispace0,
             alt((
                 Self::parse_comment,
+                Self::parse_redirect,
                 Self::parse_exec_script,
                 Self::parse_define,
                 Self::parse_pipeline,
@@ -396,14 +491,21 @@ impl Parse {
 
     fn parse_compound_statement(input: &str) -> IResult<&str, Node> {
         let (no_used, parsed) = map(
-            many1(Self::parse_statement), // 単数コマンド
+            alt(
+                (
+                    many1(map(
+                        permutation((Self::parse_statement, opt(tag(";")))),
+                        |(stmt, _)| stmt,
+                    )),
+                    many1(Self::parse_statement), // 改行で終わる
+                ), // 改行で終わる
+            ),
             |compound_statements| {
                 Node::CompoundStatement(CompoundStatement::new(compound_statements))
             },
         )(input)?;
         Ok((no_used, parsed))
     }
-    //many1(terminated(Self::parse_statement, line_ending)), // 改行で終わる
 
     pub fn parse_node(input: &str) -> IResult<&str, Node> {
         let (no_used, parsed) = Self::parse_compound_statement(input)?;
@@ -488,6 +590,11 @@ mod tests {
         let expected = Node::Identifier(Identifier::new("identifier".to_string()));
         let result = Parse::parse_identifier(input).unwrap().1;
         assert_eq!(result, expected);
+
+        let input = "'identi fier'";
+        let expected = Node::Identifier(Identifier::new("identi fier".to_string()));
+        let result = Parse::parse_identifier(input).unwrap().1;
+        assert_eq!(result, expected);
     }
 
     #[test]
@@ -540,7 +647,7 @@ mod tests {
 
     #[test]
     fn test_parse_command_with_backslash() {
-        let input = "echo arg1 \\ arg2";
+        let input = "echo arg1 \\\narg2";
         let expected = Node::CommandStatement(Box::new(CommandStatement::new(
             Node::Identifier(Identifier::new("echo".to_string())),
             vec![
@@ -564,6 +671,18 @@ mod tests {
         assert_eq!(result, expected);
 
         let input = "echo arg1 \\\n     arg2 \\\n         arg3\n";
+        let expected = Node::CommandStatement(Box::new(CommandStatement::new(
+            Node::Identifier(Identifier::new("echo".to_string())),
+            vec![
+                Node::Identifier(Identifier::new("arg1".to_string())),
+                Node::Identifier(Identifier::new("arg2".to_string())),
+                Node::Identifier(Identifier::new("arg3".to_string())),
+            ],
+        )));
+        let result = Parse::parse_command_with_backslash(input).unwrap().1;
+        assert_eq!(result, expected);
+
+        let input = "echo arg1 \\  #comment\n     arg2 \\\n         arg3\n";
         let expected = Node::CommandStatement(Box::new(CommandStatement::new(
             Node::Identifier(Identifier::new("echo".to_string())),
             vec![
@@ -644,6 +763,82 @@ mod tests {
     }
 
     #[test]
+    fn parse_redirect_input() {
+        let input = " < file";
+        let expected = Node::RedirectInput(Box::new(RedirectInput::new(Node::Identifier(
+            Identifier::new("file".to_string()),
+        ))));
+        let result = Parse::parse_redirect_specifier(input).unwrap().1;
+        assert_eq!(result, expected);
+
+        let input = "cmd < file1 < file2";
+        let expected = Node::Redirect(Box::new(Redirect::new(
+            Node::CommandStatement(Box::new(CommandStatement::new(
+                Node::Identifier(Identifier::new("cmd".to_string())),
+                vec![],
+            ))),
+            vec![
+                Node::RedirectInput(Box::new(RedirectInput::new(Node::Identifier(
+                    Identifier::new("file1".to_string()),
+                )))),
+                Node::RedirectInput(Box::new(RedirectInput::new(Node::Identifier(
+                    Identifier::new("file2".to_string()),
+                )))),
+            ],
+        )));
+        let result = Parse::parse_redirect(input).unwrap().1;
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn parse_redirect_output() {
+        let input = " > file";
+        let expected = Node::RedirectOutput(Box::new(RedirectOutput::new(Node::Identifier(
+            Identifier::new("file".to_string()),
+        ))));
+        let result = Parse::parse_redirect_specifier(input).unwrap().1;
+        assert_eq!(result, expected);
+
+        let input = "cmd > file1 > file2";
+        let expected = Node::Redirect(Box::new(Redirect::new(
+            Node::CommandStatement(Box::new(CommandStatement::new(
+                Node::Identifier(Identifier::new("cmd".to_string())),
+                vec![],
+            ))),
+            vec![
+                Node::RedirectOutput(Box::new(RedirectOutput::new(Node::Identifier(
+                    Identifier::new("file1".to_string()),
+                )))),
+                Node::RedirectOutput(Box::new(RedirectOutput::new(Node::Identifier(
+                    Identifier::new("file2".to_string()),
+                )))),
+            ],
+        )));
+        let result = Parse::parse_redirect(input).unwrap().1;
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn parse_redirect_combined() {
+        let input = "cmd < input > output";
+        let expected = Node::Redirect(Box::new(Redirect::new(
+            Node::CommandStatement(Box::new(CommandStatement::new(
+                Node::Identifier(Identifier::new("cmd".to_string())),
+                vec![],
+            ))),
+            vec![
+                Node::RedirectInput(Box::new(RedirectInput::new(Node::Identifier(
+                    Identifier::new("input".to_string()),
+                )))),
+                Node::RedirectOutput(Box::new(RedirectOutput::new(Node::Identifier(
+                    Identifier::new("output".to_string()),
+                )))),
+            ],
+        )));
+        let result = Parse::parse_redirect(input).unwrap().1;
+        assert_eq!(result, expected);
+    }
+    #[test]
     fn test_parse_statement() {
         let input = "var=\"value\"";
         let expected = Node::Define(Box::new(Define::new(
@@ -671,6 +866,23 @@ mod tests {
         assert_eq!(result, expected);
 
         let input = "echo arg1\ncommand arg1 arg2\n";
+        let expected = Node::CompoundStatement(CompoundStatement::new(vec![
+            Node::CommandStatement(Box::new(CommandStatement::new(
+                Node::Identifier(Identifier::new("echo".to_string())),
+                vec![Node::Identifier(Identifier::new("arg1".to_string()))],
+            ))),
+            Node::CommandStatement(Box::new(CommandStatement::new(
+                Node::Identifier(Identifier::new("command".to_string())),
+                vec![
+                    Node::Identifier(Identifier::new("arg1".to_string())),
+                    Node::Identifier(Identifier::new("arg2".to_string())),
+                ],
+            ))),
+        ]));
+        let result = Parse::parse_compound_statement(input).unwrap().1;
+        assert_eq!(result, expected);
+
+        let input = "echo arg1;command arg1 arg2;";
         let expected = Node::CompoundStatement(CompoundStatement::new(vec![
             Node::CommandStatement(Box::new(CommandStatement::new(
                 Node::Identifier(Identifier::new("echo".to_string())),

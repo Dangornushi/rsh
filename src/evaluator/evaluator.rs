@@ -2,7 +2,8 @@ use crate::command;
 use crate::error::error::{RshError, Status, StatusCode};
 use crate::log::log_maneger::csv_writer;
 use crate::parser::parse::{
-    CommandStatement, CompoundStatement, Define, ExecScript, Identifier, Node, Pipeline,
+    CommandStatement, CompoundStatement, Define, ExecScript, Identifier, Node, Pipeline, Redirect,
+    RedirectInput,
 };
 use crate::rsh::rsh::Rsh;
 
@@ -15,7 +16,6 @@ use std::process::{Child, Command, Stdio};
 use std::{ffi::CString, io::Write};
 
 use crossterm::{execute, style::Print};
-use nix::unistd::dup2;
 use nix::{
     errno::Errno,
     libc,
@@ -129,7 +129,13 @@ impl Evaluator {
 
                 match execvp(&path, &c_args) {
                     Ok(_) => Ok(Status::success()),
-                    Err(err) => Err(RshError::new(format!("{:?}", err).as_str())),
+                    Err(err) => match err {
+                        nix::Error::Sys(errno) => match errno {
+                            Errno::ENOENT => Err(RshError::new(errno.desc())),
+                            _ => Err(RshError::new(format!("{:?}", errno.desc()).as_str())),
+                        },
+                        _ => Err(RshError::new(format!("{:?}", err).as_str())),
+                    },
                 }
 
                 // -------------
@@ -246,7 +252,7 @@ impl Evaluator {
             })
             .collect::<Vec<String>>();
 
-        let mut full_command = vec![command];
+        let mut full_command = vec![command.clone()];
         full_command.extend(sub_command);
 
         // 分割したコマンドを実行
@@ -259,7 +265,7 @@ impl Evaluator {
                 //println!("Evaluator Exit: {}", return_code);
             }
             Err(err) => {
-                println!("Evaluator-{}", err.message);
+                println!("command:'{}' is {}", command, err.message);
                 std::process::exit(0);
             }
         }
@@ -302,7 +308,65 @@ impl Evaluator {
 
         self.pipe_commands.clear();
         self.switch_process(Process::NoPipe);
+    }
 
+    fn eval_redirect_input(&mut self, input: RedirectInput) -> String {
+        // リダイレクト処理
+        match input.get_destination() {
+            Node::Identifier(identifier) => self.eval_identifier(identifier),
+            _ => {
+                println!("redirect error: {:?}", input);
+                unreachable!()
+            }
+        }
+    }
+
+    fn eval_redirect(&mut self, input: Redirect) {
+        let command = match input.get_command().get_lhs() {
+            Node::Identifier(identifier) => self.eval_identifier(identifier.clone()),
+            _ => {
+                Default::default() // Replace with an appropriate default value
+            }
+        };
+        let sub_command = input.get_command()
+            .get_rhs()
+            .into_iter()
+            .map(|node| match node {
+                Node::Identifier(identifier) => identifier.eval(),
+                _ => Default::default(), // Handle other cases appropriately
+            })
+            .collect::<Vec<String>>();
+
+        let mut full_command = vec![command.clone()];
+        full_command.extend(sub_command);
+
+
+        // リダイレクト処理
+        if let Some(last_destination) = input.get_destination().last() {
+
+            let d = match last_destination {
+                Node::RedirectInput(destination) => self.eval_redirect_input(*destination.clone()),
+                _ => Default::default(), // Handle other cases appropriately
+            };
+
+            let file = File::open(d).unwrap();
+            // 入力操作　
+            let std_in = Stdio::from(file);
+
+            match self.rsh_pipe_launch(
+                vec![full_command],
+                std_in,
+                Stdio::inherit(),
+            ) {
+                Ok(mut child) => {
+                    let _ = child.wait();
+                }
+                Err(err) => {
+                    println!("Error:> {}", err);
+                }
+            };
+
+        }
     }
 
     fn eval_branch(&mut self, node: Node) -> impl Any {
@@ -348,7 +412,11 @@ impl Evaluator {
                     // パイプライン処理
                     self.eval_pipeline(pipeline);
                 }
-                Node::Comment(_) => {},
+                Node::Redirect(redirect) => {
+                    // リダイレクト処理
+                    self.eval_redirect(*redirect);
+                }
+                Node::Comment(_) => {}
                 _ => {
                     println!("I don't know: {:?}", s);
                 }

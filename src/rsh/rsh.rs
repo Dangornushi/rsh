@@ -652,7 +652,7 @@ impl Rsh {
                         break;
                     }
                     KeyCode::Char('a') => {
-                        if self.char_count + 1 < self.buffer.buffer.chars().count() {
+                        if self.char_count < self.buffer.buffer.chars().count() {
                             self.move_cursor_right(&mut stdout, direction, &mut range_string);
                         }
                         self.now_mode = Mode::Input;
@@ -962,7 +962,6 @@ impl Rsh {
                     self.buffer.buffer.clear();
                     enable_raw_mode().unwrap();
                 }
-
                 Mode::Visual => {
                     execute!(stdout, SetCursorStyle::BlinkingUnderScore).unwrap();
                     self.rsh_move_cursor();
