@@ -20,6 +20,7 @@ pub enum Node {
     Pipeline(Pipeline),
     RedirectInput(Box<RedirectInput>),
     RedirectOutput(Box<RedirectOutput>),
+    RedirectErrorOutput(Box<RedirectErrorOutput>),
     Redirect(Box<Redirect>),
     ExecScript(Box<ExecScript>),
     Identifier(Identifier),
@@ -172,6 +173,22 @@ impl RedirectOutput {
         self.destination.clone()
     }
 }
+#[derive(Debug, PartialEq, Clone)]
+pub struct RedirectErrorOutput {
+    destination: Node,
+}
+impl RedirectErrorOutput {
+    pub fn new(destination: Node) -> RedirectErrorOutput {
+        RedirectErrorOutput {
+            destination: destination,
+        }
+    }
+
+    pub fn get_destination(&self) -> Node {
+        self.destination.clone()
+    }
+}
+
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Redirect {
@@ -246,12 +263,14 @@ impl ExecScript {
 
 // 出力 -------------------------------------------------------------------------
 // command >&2      # 標準出力を標準エラー出力にリダイレクト
+
 // command > file   # ファイル作成 or 上書き
 // command >> file  # 追加出力。ファイルがなければ作成
 // command 2> file  # 標準エラー出力をファイルにリダイレクト(作成 or 上書き)
-// command &> file      # 標準出力/エラー出力を同一ファイルにリダイレクト
 
+// command &> file      # 標準出力/エラー出力を同一ファイルにリダイレクト
 // command > file 2>&1  # 同上
+
 // command &>> file     # 標準出力/エラー出力を同一ファイルに追加書き込み
 // command >> file 2>&1 # 同上
 
@@ -425,43 +444,28 @@ impl Parse {
         Ok((no_used, parsed))
     }
 
-    fn parse_pipeline(input: &str) -> IResult<&str, Node> {
-        let (no_used, parsed) = map(
-            permutation((
-                Self::parse_command,
-                many1(permutation((
-                    multispace0,
-                    tag("|"),
-                    multispace0,
-                    Self::parse_command,
-                ))),
-            )),
-            |(command, options)| {
-                let mut v: Vec<Node> = Vec::new();
-                v.push(command);
-                for opt in options {
-                    v.push(opt.3.clone());
-                }
-                Node::Pipeline(Pipeline::new(v))
-            },
-        )(input)?;
-        Ok((no_used, parsed))
-    }
-
     fn parse_redirect_specifier(input: &str) -> IResult<&str, Node> {
-        let (no_used, parsed) = map(
-            permutation((
-                multispace0,
-                alt((tag("<"), tag(">"))),
-                multispace0,
-                Self::parse_filename,
-            )),
-            |(_, kind, _, filename)| match kind {
-                "<" => Node::RedirectInput(Box::new(RedirectInput::new(filename))),
-                ">" => Node::RedirectOutput(Box::new(RedirectOutput::new(filename))),
-                _ => unreachable!(),
-            },
-        )(input)?;
+        let (no_used, parsed) = context(
+            "parse_redirect_specifier",
+            map(
+                permutation((
+                    multispace0,
+                    alt((tag("<"), tag(">"), tag("2>"))),
+                    multispace0,
+                    Self::parse_filename,
+                )),
+                |(_, kind, _, filename)| match kind {
+                    "<" => Node::RedirectInput(Box::new(RedirectInput::new(filename))),
+                    ">" => Node::RedirectOutput(Box::new(RedirectOutput::new(filename))),
+                    "2>" => Node::RedirectErrorOutput(Box::new(RedirectErrorOutput::new(filename))),
+                    _ => unreachable!(),
+                },
+            ),
+        )(input)
+        .map_err(|e| {
+            //println!("parse_redirect_specifier error: {:?}", e);
+            e
+        })?;
         Ok((no_used, parsed))
     }
     fn parse_redirect(input: &str) -> IResult<&str, Node> {
@@ -472,6 +476,33 @@ impl Parse {
         Ok((no_used, parsed))
     }
 
+    //cat test.txt |  sort > sorted.txt
+    fn parse_pipeline(input: &str) -> IResult<&str, Node> {
+        let (no_used, parsed) = context(
+            "parse_pipeline",
+            map(
+                permutation((
+                    alt((Self::parse_command, Self::parse_redirect)),
+                    many1(permutation((
+                        multispace0,
+                        tag("|"),
+                        multispace0,
+                        alt((Self::parse_redirect, Self::parse_command)),
+                    ))),
+                )),
+                |(command, options)| {
+                    let mut v: Vec<Node> = Vec::new();
+                    v.push(command);
+                    for opt in options {
+                        v.push(opt.3.clone());
+                    }
+                    Node::Pipeline(Pipeline::new(v))
+                },
+            ),
+        )(input)
+        .map_err(|e| e)?;
+        Ok((no_used, parsed))
+    }
     fn parse_statement(input: &str) -> IResult<&str, Node> {
         let (no_used, parsed) = permutation((
             multispace0,
@@ -838,6 +869,32 @@ mod tests {
         let result = Parse::parse_redirect(input).unwrap().1;
         assert_eq!(result, expected);
     }
+    #[test]
+    fn test_parse_complex_command() {
+        let input = "echo \"Hello, World!\" > sorted.txt | cat sorted.txt";
+        let expected = Node::CompoundStatement(CompoundStatement::new(vec![Node::Pipeline(
+            Pipeline::new(vec![
+                Node::Redirect(Box::new(Redirect::new(
+                    Node::CommandStatement(Box::new(CommandStatement::new(
+                        Node::Identifier(Identifier::new("echo".to_string())),
+                        vec![Node::Identifier(Identifier::new(
+                            "Hello, World!".to_string(),
+                        ))],
+                    ))),
+                    vec![Node::RedirectOutput(Box::new(RedirectOutput::new(
+                        Node::Identifier(Identifier::new("sorted.txt".to_string())),
+                    )))],
+                ))),
+                Node::CommandStatement(Box::new(CommandStatement::new(
+                    Node::Identifier(Identifier::new("cat".to_string())),
+                    vec![Node::Identifier(Identifier::new("sorted.txt".to_string()))],
+                ))),
+            ]),
+        )]));
+        let result = Parse::parse_compound_statement(input).unwrap().1;
+        assert_eq!(result, expected);
+    }
+
     #[test]
     fn test_parse_statement() {
         let input = "var=\"value\"";

@@ -7,7 +7,5 @@ echo \
         'like' \
         'shell' \
         'script'
-echo                # 引数なしの echo コマンドとして実行される
-'End world!'        # 'End world!' というコマンドを実行しようとするが存在しないのでエラーになる
 
-sort < test.txt
+sort < test.txt > sorted.txt

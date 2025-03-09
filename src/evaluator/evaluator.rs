@@ -3,11 +3,12 @@ use crate::error::error::{RshError, Status, StatusCode};
 use crate::log::log_maneger::csv_writer;
 use crate::parser::parse::{
     CommandStatement, CompoundStatement, Define, ExecScript, Identifier, Node, Pipeline, Redirect,
-    RedirectInput,
+    RedirectInput, RedirectOutput,
 };
 use crate::rsh::rsh::Rsh;
 
 use std::any::Any;
+use std::env::args;
 use std::fs::File;
 use std::io::{self, ErrorKind};
 use std::io::{stdout, Read};
@@ -143,11 +144,18 @@ impl Evaluator {
         }
     }
 
-    fn run(&mut self, commands: Vec<String>, std_in: Stdio, std_out: Stdio) -> io::Result<Child> {
+    fn run(
+        &mut self,
+        commands: Vec<String>,
+        std_in: Stdio,
+        std_out: Stdio,
+        std_err: Stdio,
+    ) -> io::Result<Child> {
         Command::new(commands[0].clone())
             .args(&commands[1..])
             .stdin(std_in)
             .stdout(std_out)
+            .stderr(std_err)
             .spawn()
     }
 
@@ -156,6 +164,7 @@ impl Evaluator {
         args: Vec<Vec<String>>,
         si: Stdio,
         stdout: Stdio,
+        std_err: Stdio,
     ) -> io::Result<Child> {
         let mut itr = args.into_iter().peekable();
         let mut std_in = si;
@@ -163,12 +172,12 @@ impl Evaluator {
             while let Some(command) = itr.next() {
                 if itr.peek().is_some() {
                     // 次にコマンドがアル場合パイプ処理を行う
-                    let process = self.run(command, std_in, Stdio::piped());
+                    let process = self.run(command, std_in, Stdio::piped(), Stdio::piped());
                     std_in = Stdio::from_raw_fd(process.unwrap().stdout.unwrap().into_raw_fd());
                     // プロセスの標準出力を次のプロセスの標準入力にする
                 } else {
                     // 一つだけのコマンドを行う
-                    return self.run(command, std_in, stdout);
+                    return self.run(command, std_in, stdout, std_err);
                 }
             }
         }
@@ -283,21 +292,70 @@ impl Evaluator {
         println!("{} = {}\n", var, data);
     }
 
+    fn rsh_pipe_launch_from_node(&mut self, args: Vec<Node>) -> io::Result<Child> {
+        let mut std_in = Stdio::inherit();
+        let mut std_out = Stdio::inherit();
+        let mut std_err = Stdio::inherit();
+
+        for command in args {
+            match command.get_node() {
+                Node::CommandStatement(command) => self.eval_command(*command),
+                Node::Redirect(redirect) => {
+                    // リダイレクト処理
+
+                    let co = match redirect.get_command().get_lhs() {
+                        Node::Identifier(identifier) => self.eval_identifier(identifier.clone()),
+                        _ => {
+                            Default::default() // Replace with an appropriate default value
+                        }
+                    };
+                    let sub_co = redirect
+                        .get_command()
+                        .get_rhs()
+                        .into_iter()
+                        .map(|node| match node {
+                            Node::Identifier(identifier) => identifier.eval(),
+                            _ => Default::default(), // Handle other cases appropriately
+                        })
+                        .collect::<Vec<String>>();
+
+                    let mut full_command = vec![co.clone()];
+                    full_command.extend(sub_co);
+
+                    // リダイレクト処理
+
+                    self.eval_redirect_branch(
+                        redirect.get_destination(),
+                        &mut std_in,
+                        &mut std_out,
+                        &mut std_err,
+                    );
+                }
+                _ => println!("I don't know: {:?}", command),
+            }
+        }
+        let mut itr = self.pipe_commands.clone().into_iter().peekable();
+        unsafe {
+            while let Some(command) = itr.next() {
+                if itr.peek().is_some() {
+                    // 次にコマンドがアル場合パイプ処理を行う
+                    let process = self.run(command, std_in, Stdio::piped(), Stdio::piped());
+                    // プロセスの標準出力を次のプロセスの標準入力にする
+                    std_in = Stdio::from_raw_fd(process.unwrap().stdout.unwrap().into_raw_fd());
+                } else {
+                    // 一つだけのコマンドを行う
+                    return self.run(command, std_in, std_out, std_err);
+                }
+            }
+        }
+        unreachable!();
+    }
+
     fn eval_pipeline(&mut self, pipeline: Pipeline) {
         self.switch_process(Process::Pipe);
         self.pipe_commands.clear();
         // パイプライン処理
-        for command in pipeline.get_commands() {
-            match command.get_node() {
-                Node::CommandStatement(command) => self.eval_command(*command),
-                _ => println!("I don't know: {:?}", command),
-            }
-        }
-        match self.rsh_pipe_launch(
-            self.pipe_commands.clone(),
-            Stdio::inherit(),
-            Stdio::inherit(),
-        ) {
+        match self.rsh_pipe_launch_from_node(pipeline.get_commands()) {
             Ok(mut child) => {
                 let _ = child.wait();
             }
@@ -310,7 +368,46 @@ impl Evaluator {
         self.switch_process(Process::NoPipe);
     }
 
+    fn eval_redirect_branch(
+        &mut self,
+        destinations: Vec<Node>,
+        std_in: &mut Stdio,
+        std_out: &mut Stdio,
+        std_err: &mut Stdio,
+    ) -> impl Any {
+        // リダイレクト処理
+
+        for destination in destinations {
+            match destination {
+                Node::RedirectInput(destination) => {
+                    let d = self.eval_redirect_input(*destination.clone());
+                    let file = File::open(d.clone()).unwrap();
+                    // 入力操作
+                    *std_in = Stdio::from(file);
+                }
+                Node::RedirectOutput(destination) => {
+                    let d = self.eval_redirect_output(*destination.clone());
+                    let file = File::create(d).unwrap();
+                    // 出力操作
+                    *std_out = Stdio::from(file);
+                }
+                _ => Default::default(), // Handle other cases appropriately
+            };
+        }
+    }
+
     fn eval_redirect_input(&mut self, input: RedirectInput) -> String {
+        // リダイレクト処理
+        match input.get_destination() {
+            Node::Identifier(identifier) => self.eval_identifier(identifier),
+            _ => {
+                println!("redirect error: {:?}", input);
+                unreachable!()
+            }
+        }
+    }
+
+    fn eval_redirect_output(&mut self, input: RedirectOutput) -> String {
         // リダイレクト処理
         match input.get_destination() {
             Node::Identifier(identifier) => self.eval_identifier(identifier),
@@ -328,7 +425,8 @@ impl Evaluator {
                 Default::default() // Replace with an appropriate default value
             }
         };
-        let sub_command = input.get_command()
+        let sub_command = input
+            .get_command()
             .get_rhs()
             .into_iter()
             .map(|node| match node {
@@ -340,33 +438,24 @@ impl Evaluator {
         let mut full_command = vec![command.clone()];
         full_command.extend(sub_command);
 
+        let mut std_in = Stdio::inherit();
+        let mut std_out = Stdio::inherit();
+        let mut std_err = Stdio::inherit();
 
-        // リダイレクト処理
-        if let Some(last_destination) = input.get_destination().last() {
-
-            let d = match last_destination {
-                Node::RedirectInput(destination) => self.eval_redirect_input(*destination.clone()),
-                _ => Default::default(), // Handle other cases appropriately
-            };
-
-            let file = File::open(d).unwrap();
-            // 入力操作　
-            let std_in = Stdio::from(file);
-
-            match self.rsh_pipe_launch(
-                vec![full_command],
-                std_in,
-                Stdio::inherit(),
-            ) {
-                Ok(mut child) => {
-                    let _ = child.wait();
-                }
-                Err(err) => {
-                    println!("Error:> {}", err);
-                }
-            };
-
-        }
+        self.eval_redirect_branch(
+            input.get_destination(),
+            &mut std_in,
+            &mut std_out,
+            &mut std_err,
+        );
+        match self.rsh_pipe_launch(vec![full_command], std_in, std_out, std_err) {
+            Ok(mut child) => {
+                let _ = child.wait();
+            }
+            Err(err) => {
+                println!("Error:> {}", err);
+            }
+        };
     }
 
     fn eval_branch(&mut self, node: Node) -> impl Any {
@@ -490,45 +579,15 @@ mod tests {
         assert_eq!(result, "test");
     }
 
-    /*
     #[test]
     fn test_eval_command() {
         let rsh = Rsh::new();
         let mut evaluator = Evaluator::new(rsh);
-        let command = Command::new(
+        let command = CommandStatement::new(
             Node::Identifier(Identifier::new("echo".to_string())),
             vec![Node::Identifier(Identifier::new("Hello".to_string()))],
         );
         evaluator.eval_command(command);
         // Add assertions or checks if possible
     }
-
-    #[test]
-    fn test_eval_compound_statement() {
-        let rsh = Rsh::new();
-        let mut evaluator = Evaluator::new(rsh);
-        let command = Command::new(
-            Node::Identifier(Identifier::new("echo".to_string())),
-            vec![Node::Identifier(Identifier::new("Hello".to_string()))],
-        );
-        let compound_statement = CompoundStatement::new(vec![Node::Command(Box::new(command))]);
-        evaluator.eval_compound_statement(compound_statement);
-        // Add assertions or checks if possible
-    }
-
-    #[test]
-    fn test_evaluate() {
-        let rsh = Rsh::new();
-        let mut evaluator = Evaluator::new(rsh);
-        let command = Command::new(
-            Node::Identifier(Identifier::new("echo".to_string())),
-            vec![Node::Identifier(Identifier::new("Hello".to_string()))],
-        );
-        let ast = Node::CompoundStatement(CompoundStatement::new(vec![Node::Command(Box::new(
-            command,
-        ))]));
-        evaluator.evaluate(ast);
-        // Add assertions or checks if possible
-    }
-     */
 }
