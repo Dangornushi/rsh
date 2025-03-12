@@ -393,6 +393,7 @@ impl Evaluator {
         std_err: &mut Stdio,
     ) -> impl Any {
         // リダイレクト処理
+        println!("destinations: {:?}", destinations);
 
         for destination in destinations {
             match destination {
