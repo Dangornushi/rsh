@@ -291,7 +291,7 @@ impl Evaluator {
             }
             Err(err) => {
                 println!("command:'{}' is {}", command, err.message);
-                std::process::exit(0);
+                //std::process::exit(0);
             }
         }
     }
