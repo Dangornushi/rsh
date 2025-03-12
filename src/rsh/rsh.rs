@@ -712,12 +712,6 @@ impl Rsh {
                 }
                 Mode::Input => {
                     execute!(stdout, SetCursorStyle::SteadyBar).unwrap();
-                    // カーソルを指定の位置にずらす(Nomalモードで移動があった場合表示はここで更新される)
-                    execute!(
-                        stdout,
-                        MoveToColumn((self.prompt.len() + self.cursor_x) as u16)
-                    )
-                    .unwrap();
 
                     // 入力を取得
                     let mut pushed_tab = false;
@@ -728,11 +722,21 @@ impl Rsh {
 
                     self.get_directory_contents("./");
                     self.initializations_cursor_view(&mut stdout);
+
                     loop {
                         // 文字が入力ごとにループが回る
 
+                        // カーソルを指定の位置にずらす
+                        execute!(
+                            stdout,
+                            MoveToColumn((self.prompt.len() + self.cursor_x) as u16)
+                        )
+                        .unwrap();
+
                         // キー入力の取得
-                        if poll(Duration::from_millis(5)).map_err(|_| RshError::new("Failed to poll"))? {
+                        if poll(Duration::from_millis(5))
+                            .map_err(|_| RshError::new("Failed to poll"))?
+                        {
                             if let Ok(Event::Key(KeyEvent {
                                 code,
                                 modifiers: _,
@@ -837,9 +841,7 @@ impl Rsh {
                                                 }
                                                 self.buffer.buffer.clone()
                                             }
-                                            _ => {
-                                                self.buffer.buffer.clone()
-                                            }
+                                            _ => self.buffer.buffer.clone(),
                                         };
                                     }
                                 }
