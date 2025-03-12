@@ -20,6 +20,7 @@ pub enum Node {
     Pipeline(Pipeline),
     RedirectInput(Box<RedirectInput>),
     RedirectOutput(Box<RedirectOutput>),
+    RedirectOutputAppend(Box<RedirectOutputAppend>),
     RedirectErrorOutput(Box<RedirectErrorOutput>),
     Redirect(Box<Redirect>),
     ExecScript(Box<ExecScript>),
@@ -173,6 +174,23 @@ impl RedirectOutput {
         self.destination.clone()
     }
 }
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct RedirectOutputAppend {
+    destination: Node,
+}
+impl RedirectOutputAppend {
+    pub fn new(destination: Node) -> RedirectOutputAppend {
+        RedirectOutputAppend {
+            destination: destination,
+        }
+    }
+
+    pub fn get_destination(&self) -> Node {
+        self.destination.clone()
+    }
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct RedirectErrorOutput {
     destination: Node,
@@ -188,7 +206,6 @@ impl RedirectErrorOutput {
         self.destination.clone()
     }
 }
-
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Redirect {
@@ -311,10 +328,13 @@ impl Parse {
     }
 
     fn parse_constant(input: &str) -> IResult<&str, Node> {
-        let (no_used, parsed) = nom::bytes::complete::is_not("\n \\<>;|=#")(input)?;
+        let (no_used, parsed) = permutation((
+            nom::bytes::complete::is_not("1234567890\n \\<>;|=#"),
+            many0(nom::bytes::complete::is_not("\n \\<>;|=#")),
+        ))(input)?;
         Ok((
             no_used,
-            Node::Identifier(Identifier::new(parsed.to_string())),
+            Node::Identifier(Identifier::new(format!("{}{}", parsed.0, parsed.1.join("")))),
         ))
     }
 
@@ -450,13 +470,16 @@ impl Parse {
             map(
                 permutation((
                     multispace0,
-                    alt((tag("<"), tag(">"), tag("2>"))),
+                    alt((tag("<"), tag(">"), tag(">>"), tag("2>"))),
                     multispace0,
                     Self::parse_filename,
                 )),
                 |(_, kind, _, filename)| match kind {
                     "<" => Node::RedirectInput(Box::new(RedirectInput::new(filename))),
                     ">" => Node::RedirectOutput(Box::new(RedirectOutput::new(filename))),
+                    ">>" => {
+                        Node::RedirectOutputAppend(Box::new(RedirectOutputAppend::new(filename)))
+                    }
                     "2>" => Node::RedirectErrorOutput(Box::new(RedirectErrorOutput::new(filename))),
                     _ => unreachable!(),
                 },
@@ -468,6 +491,7 @@ impl Parse {
         })?;
         Ok((no_used, parsed))
     }
+
     fn parse_redirect(input: &str) -> IResult<&str, Node> {
         let (no_used, parsed) = map(
             permutation((Self::parse_command, many1(Self::parse_redirect_specifier))),
@@ -482,7 +506,7 @@ impl Parse {
             "parse_pipeline",
             map(
                 permutation((
-                    alt((Self::parse_command, Self::parse_redirect)),
+                    alt((Self::parse_redirect, Self::parse_command)),
                     many1(permutation((
                         multispace0,
                         tag("|"),
@@ -508,10 +532,10 @@ impl Parse {
             multispace0,
             alt((
                 Self::parse_comment,
+                Self::parse_pipeline,
                 Self::parse_redirect,
                 Self::parse_exec_script,
                 Self::parse_define,
-                Self::parse_pipeline,
                 Self::parse_command_with_backslash,
                 Self::parse_command,
             )),
@@ -844,6 +868,24 @@ mod tests {
                     Identifier::new("file2".to_string()),
                 )))),
             ],
+        )));
+        let result = Parse::parse_redirect(input).unwrap().1;
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn parse_redirect_error_output() {
+        let input = "cmd 2> error.log";
+        let expected = Node::Redirect(Box::new(Redirect::new(
+            Node::CommandStatement(Box::new(CommandStatement::new(
+                Node::Identifier(Identifier::new("cmd".to_string())),
+                vec![],
+            ))),
+            vec![Node::RedirectErrorOutput(Box::new(
+                RedirectErrorOutput::new(Node::Identifier(Identifier::new(
+                    "error.log".to_string(),
+                ))),
+            ))],
         )));
         let result = Parse::parse_redirect(input).unwrap().1;
         assert_eq!(result, expected);

@@ -3,7 +3,7 @@ use crate::error::error::{RshError, Status, StatusCode};
 use crate::log::log_maneger::csv_writer;
 use crate::parser::parse::{
     CommandStatement, CompoundStatement, Define, ExecScript, Identifier, Node, Pipeline, Redirect,
-    RedirectInput, RedirectOutput,
+    RedirectInput, RedirectOutput, RedirectErrorOutput
 };
 use crate::rsh::rsh::Rsh;
 
@@ -225,7 +225,23 @@ impl Evaluator {
                         #[cfg(not(test))]
                         {
                             match self.now_process {
-                                Process::NoPipe => self.rsh_launch(args),
+                                Process::NoPipe => {
+                                    match self.run(
+                                        args,
+                                        Stdio::inherit(),
+                                        Stdio::inherit(),
+                                        Stdio::inherit(),
+                                    ) {
+                                        Ok(mut child) => {
+                                            let _ = child.wait();
+                                            Ok(Status::success())
+                                        }
+                                        Err(err) => {
+                                            println!("Error: {}", err);
+                                            Err(RshError::new("Failed to run command"))
+                                        }
+                                    }
+                                }
                                 Process::Pipe => {
                                     self.pipe_commands.push(args);
                                     Ok(Status::success())
@@ -297,12 +313,11 @@ impl Evaluator {
         let mut std_out = Stdio::inherit();
         let mut std_err = Stdio::inherit();
 
-        for command in args {
+        for command in args.clone() {
             match command.get_node() {
                 Node::CommandStatement(command) => self.eval_command(*command),
                 Node::Redirect(redirect) => {
                     // リダイレクト処理
-
                     let co = match redirect.get_command().get_lhs() {
                         Node::Identifier(identifier) => self.eval_identifier(identifier.clone()),
                         _ => {
@@ -319,8 +334,9 @@ impl Evaluator {
                         })
                         .collect::<Vec<String>>();
 
-                    let mut full_command = vec![co.clone()];
+                    let mut full_command = vec![co];
                     full_command.extend(sub_co);
+                    self.pipe_commands.push(full_command);
 
                     // リダイレクト処理
 
@@ -348,6 +364,7 @@ impl Evaluator {
                 }
             }
         }
+
         unreachable!();
     }
 
@@ -391,7 +408,14 @@ impl Evaluator {
                     // 出力操作
                     *std_out = Stdio::from(file);
                 }
-                _ => Default::default(), // Handle other cases appropriately
+                Node::RedirectErrorOutput(destination) => {
+                    println!("RedirectErrorOutput");
+                    let d = self.eval_redirect_error_output(*destination.clone());
+                    let file = File::create(d).unwrap();
+                    // 出力操作
+                    *std_err = Stdio::from(file);
+                }
+                _ => println!("other: {:?}", destination), // Handle other cases appropriately
             };
         }
     }
@@ -408,6 +432,17 @@ impl Evaluator {
     }
 
     fn eval_redirect_output(&mut self, input: RedirectOutput) -> String {
+        // リダイレクト処理
+        match input.get_destination() {
+            Node::Identifier(identifier) => self.eval_identifier(identifier),
+            _ => {
+                println!("redirect error: {:?}", input);
+                unreachable!()
+            }
+        }
+    }
+
+    fn eval_redirect_error_output(&mut self, input: RedirectErrorOutput) -> String {
         // リダイレクト処理
         match input.get_destination() {
             Node::Identifier(identifier) => self.eval_identifier(identifier),
