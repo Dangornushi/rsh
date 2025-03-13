@@ -711,6 +711,18 @@ impl Rsh {
                     self.rsh_move_cursor();
                 }
                 Mode::Input => {
+                    // 実行可能なコマンド一覧を取得
+                    self.get_executable_commands();
+
+                    // 履歴ファイルが存在するか？
+                    if let Err(err) = self.get_rshhistory_contents() {
+                        self.eprintln(&format!("Error: {}", err.message));
+                    }
+                    // 環境変数ファイルが存在するか？
+                    if let Err(_) = self.get_rshenv_contents() {
+                        self.exists_rshenv = false;
+                    }
+
                     execute!(stdout, SetCursorStyle::SteadyBar).unwrap();
 
                     // 入力を取得
@@ -859,6 +871,7 @@ impl Rsh {
                             .map(|history| history.get_command().to_string())
                             .collect();
 
+
                         // 利用可能なコマンドの中からbufferで始まるものを取得
                         let matches = self
                             .command_database
@@ -944,18 +957,6 @@ impl Rsh {
                     //self.char_count = 0;
                     self.set_prompt_color("#ECE1B4".to_string())?;
                     execute!(stdout, MoveToColumn(0), Print("\n")).unwrap();
-                    // 実行可能なコマンド一覧を取得
-                    self.get_executable_commands();
-
-                    // 履歴ファイルが存在するか？
-                    if let Err(err) = self.get_rshhistory_contents() {
-                        self.eprintln(&format!("Error: {}", err.message));
-                    }
-                    // 環境変数ファイルが存在するか？
-                    if let Err(_) = self.get_rshenv_contents() {
-                        //self.eprintln(&format!("Error: {}", err.message));
-                        self.exists_rshenv = false;
-                    }
 
                     disable_raw_mode().unwrap();
                     // コマンドの実行

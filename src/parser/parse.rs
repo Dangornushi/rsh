@@ -348,7 +348,8 @@ impl Parse {
         )(input)?;
         Ok((
             no_used,
-            Node::Identifier(Identifier::new(parsed.to_string())),
+            // TODO  シングルクォーと・ダブルクォートの区別が必要
+            Node::Identifier(Identifier::new(format!("\"{}\"", parsed))),
         ))
     }
 
@@ -362,7 +363,7 @@ impl Parse {
 
     fn parse_filename_with_dot(input: &str) -> IResult<&str, Node> {
         let (no_used, parsed) = map(
-            many1(alt((tag("."), nom::character::complete::alphanumeric1))),
+            many1(alt((tag("."), nom::character::complete::alphanumeric1, tag("_")))),
             |parsed| {
                 let mut s = String::new();
                 for p in parsed {

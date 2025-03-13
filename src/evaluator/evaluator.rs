@@ -3,7 +3,7 @@ use crate::error::error::{RshError, Status, StatusCode};
 use crate::log::log_maneger::csv_writer;
 use crate::parser::parse::{
     CommandStatement, CompoundStatement, Define, ExecScript, Identifier, Node, Pipeline, Redirect,
-    RedirectInput, RedirectOutput, RedirectErrorOutput
+    RedirectErrorOutput, RedirectInput, RedirectOutput,
 };
 use crate::rsh::rsh::Rsh;
 
@@ -151,6 +151,10 @@ impl Evaluator {
         std_out: Stdio,
         std_err: Stdio,
     ) -> io::Result<Child> {
+        let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let path = self.rsh.open_profile(".rsh_history").unwrap();
+
+        let _ = csv_writer(commands.join(" "), time, &path);
         Command::new(commands[0].clone())
             .args(&commands[1..])
             .stdin(std_in)
