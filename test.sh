@@ -11,3 +11,9 @@ echo \
 sort < test.txt > sorted.txt
 sort < test.txt | grep 'a' > sorted.txt
 ls ./not/exists/directory 2> error.txt
+
+
+a=12
+b="hello"
+
+echo $b

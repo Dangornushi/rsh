@@ -1,3 +1,13 @@
+
+## TODO
+
+- [ ] 実行ファイルの予測変換
+- [ ] 変数参照
+- [ ] If
+- [ ] While
+
+
+
 ```mermaid
 flowchart TD
 

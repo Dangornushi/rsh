@@ -26,6 +26,43 @@ use nix::{
     },
     unistd::{close, execvp, fork, getpgrp, pipe, setpgid, tcsetpgrp, ForkResult},
 };
+use std::collections::HashMap;
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct Variable {
+    name: String,
+    value: String,
+}
+impl Variable {
+    pub fn new(name: String, value: String) -> Self {
+        Variable { name, value }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct Function {
+    name: String,
+    body: Node,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct Memory {
+    variables: HashMap<String, Variable>,
+    functions: HashMap<String, Function>,
+    exit_code: i32,
+}
+impl Memory {
+    pub fn push(&mut self, variable: Variable) {
+        self.variables.insert(variable.name.clone(), variable);
+    }
+    pub fn new() -> Self {
+        Memory {
+            variables: HashMap::new(),
+            functions: HashMap::new(),
+            exit_code: 0,
+        }
+    }
+}
 
 enum Process {
     Pipe,
@@ -36,6 +73,7 @@ pub struct Evaluator {
     rsh: Rsh,
     now_process: Process,
     pipe_commands: Vec<Vec<String>>,
+    memory: Memory,
 }
 
 impl Evaluator {
@@ -44,6 +82,7 @@ impl Evaluator {
             rsh,
             now_process: Process::NoPipe,
             pipe_commands: Vec::new(),
+            memory: Memory::new(),
         }
     }
 
@@ -309,7 +348,8 @@ impl Evaluator {
             Node::Identifier(identifier) => self.eval_identifier(identifier),
             _ => Default::default(), // Handle other cases appropriately
         };
-        println!("{} = {}\n", var, data);
+
+        self.memory.push(Variable::new(var, data));
     }
 
     fn rsh_pipe_launch_from_node(&mut self, args: Vec<Node>) -> io::Result<Child> {
@@ -397,7 +437,6 @@ impl Evaluator {
         std_err: &mut Stdio,
     ) -> impl Any {
         // リダイレクト処理
-        println!("destinations: {:?}", destinations);
 
         for destination in destinations {
             match destination {
@@ -414,7 +453,6 @@ impl Evaluator {
                     *std_out = Stdio::from(file);
                 }
                 Node::RedirectErrorOutput(destination) => {
-                    println!("RedirectErrorOutput");
                     let d = self.eval_redirect_error_output(*destination.clone());
                     let file = File::create(d).unwrap();
                     // 出力操作
@@ -533,6 +571,7 @@ impl Evaluator {
                 }
                 Node::Define(define) => {
                     self.eval_define(*define);
+                    println!("memory: {:?}", self.memory);
                 }
                 Node::ExecScript(script) => {
                     self.eval_exec_script(*script);

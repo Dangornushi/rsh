@@ -334,7 +334,11 @@ impl Parse {
         ))(input)?;
         Ok((
             no_used,
-            Node::Identifier(Identifier::new(format!("{}{}", parsed.0, parsed.1.join("")))),
+            Node::Identifier(Identifier::new(format!(
+                "{}{}",
+                parsed.0,
+                parsed.1.join("")
+            ))),
         ))
     }
 
@@ -349,7 +353,7 @@ impl Parse {
         Ok((
             no_used,
             // TODO  シングルクォーと・ダブルクォートの区別が必要
-            Node::Identifier(Identifier::new(format!("\"{}\"", parsed))),
+            Node::Identifier(Identifier::new(format!("{}", parsed))),
         ))
     }
 
@@ -363,7 +367,11 @@ impl Parse {
 
     fn parse_filename_with_dot(input: &str) -> IResult<&str, Node> {
         let (no_used, parsed) = map(
-            many1(alt((tag("."), nom::character::complete::alphanumeric1, tag("_")))),
+            many1(alt((
+                tag("."),
+                nom::character::complete::alphanumeric1,
+                tag("_"),
+            ))),
             |parsed| {
                 let mut s = String::new();
                 for p in parsed {
@@ -458,7 +466,13 @@ impl Parse {
                 multispace0,
                 Self::parse_constant,
                 tag("="),
-                Self::parse_identifier,
+                alt((
+                    Self::parse_constant,
+                    Self::parse_identifier,
+                    map(nom::character::complete::digit1, |digits: &str| {
+                        Node::Identifier(Identifier::new(digits.to_string()))
+                    }),
+                )),
             )),
             |(_, var, _, data)| Node::Define(Box::new(Define::new(var, data))),
         )(input)?;
@@ -528,6 +542,7 @@ impl Parse {
         .map_err(|e| e)?;
         Ok((no_used, parsed))
     }
+
     fn parse_statement(input: &str) -> IResult<&str, Node> {
         let (no_used, parsed) = permutation((
             multispace0,

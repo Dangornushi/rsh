@@ -677,6 +677,27 @@ impl Rsh {
         }
     }
 
+    fn get_filterd_commands(&self, buffer: String) -> Vec<String> {
+        // コマンド実行履歴の中からbufferで始まるものを取得
+        let history_matches: Vec<String> = self
+            .history_database
+            .iter()
+            .filter(|history| history.get_command().starts_with(&buffer))
+            .map(|history| history.get_command().to_string())
+            .collect();
+
+        // 利用可能なコマンドの中からbufferで始まるものを取得
+        let matches = self
+            .command_database
+            .iter()
+            .filter(|command| command.starts_with(&buffer));
+
+        // 上記を配列に変換
+        let mut filtered_commands: Vec<String> =
+            history_matches.into_iter().map(|s| s.to_string()).collect();
+        filtered_commands.extend(matches.map(|s| s.to_string()));
+        filtered_commands
+    }
     pub fn rsh_loop(&mut self) -> Result<Status, RshError> {
         let mut stdout = stdout();
 
@@ -729,8 +750,7 @@ impl Rsh {
                     let mut pushed_tab = false;
                     let mut stack_buffer = String::new();
                     let mut tab_counter = 0;
-
-                    //jenable_raw_mode().unwrap();
+                    let mut space_counter = 0;
 
                     self.get_directory_contents("./");
                     self.initializations_cursor_view(&mut stdout);
@@ -795,6 +815,7 @@ impl Rsh {
                                         pushed_tab = false;
                                         self.cursor_x += 1;
                                         self.char_count += 1;
+                                        space_counter += 1;
                                     }
                                     _ => {
                                         self.buffer.buffer = match code {
@@ -809,6 +830,15 @@ impl Rsh {
                                                         .buffer
                                                         .is_char_boundary(self.cursor_x - 1)
                                                     {
+                                                        if self
+                                                            .buffer
+                                                            .buffer
+                                                            .chars()
+                                                            .nth(self.cursor_x - 1)
+                                                            == Some(' ')
+                                                        {
+                                                            space_counter -= 1;
+                                                        }
                                                         self.buffer
                                                             .buffer
                                                             .remove(self.cursor_x - 1);
@@ -819,6 +849,13 @@ impl Rsh {
                                                             .buffer
                                                             .graphemes(true)
                                                             .collect::<Vec<&str>>();
+
+                                                        if buffer_graphemes.get(self.char_count - 1)
+                                                            == Some(&" ")
+                                                        {
+                                                            space_counter -= 1;
+                                                        }
+
                                                         buffer_graphemes
                                                             .remove(self.char_count - 1);
                                                         self.buffer.buffer =
@@ -861,30 +898,11 @@ impl Rsh {
                         } else {
                             continue;
                         }
-                        // コマンド実行履歴の中からbufferで始まるものを取得
-                        let history_matches: Vec<String> = self
-                            .history_database
-                            .iter()
-                            .filter(|history| {
-                                history.get_command().starts_with(&self.buffer.buffer)
-                            })
-                            .map(|history| history.get_command().to_string())
-                            .collect();
-
-
-                        // 利用可能なコマンドの中からbufferで始まるものを取得
-                        let matches = self
-                            .command_database
-                            .iter()
-                            .filter(|command| command.starts_with(&self.buffer.buffer));
-
-                        // 上記を配列に変換
-                        let mut filtered_commands: Vec<String> =
-                            history_matches.into_iter().map(|s| s.to_string()).collect();
-                        filtered_commands.extend(matches.map(|s| s.to_string()));
-
+                        let mut filtered_commands =
+                            self.get_filterd_commands(self.buffer.buffer.clone());
                         // もしもコマンドが見つからなかった場合、環境変数を利用して参照しなおす
                         if filtered_commands.len() == 0 {
+                            // 環境変数を一つずつ取得
                             for env_path in self.env_database.clone() {
                                 // command_databaseの中からenv_path/bufferで始まるものを取得
                                 let matches = self.command_database.iter().filter(|command| {
