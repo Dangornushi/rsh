@@ -14,6 +14,6 @@ ls ./not/exists/directory 2> error.txt
 
 
 a=12
-b="hello"
+b=$a
 
 echo $b

@@ -24,6 +24,7 @@ pub enum Node {
     RedirectErrorOutput(Box<RedirectErrorOutput>),
     Redirect(Box<Redirect>),
     ExecScript(Box<ExecScript>),
+    Reference(Box<Reference>),
     Identifier(Identifier),
 }
 
@@ -229,6 +230,19 @@ impl Redirect {
     }
 }
 
+// 変数の参照を表す
+#[derive(Debug, PartialEq, Clone)]
+pub struct Reference {
+    reference: Node,
+}
+impl Reference {
+    pub fn new(val: Node) -> Reference {
+        Reference { reference: val }
+    }
+    pub fn get_reference(&self) -> Node {
+        self.reference.clone()
+    }
+}
 // 文字列を表す
 #[derive(Debug, PartialEq, Clone)]
 pub struct Identifier(String);
@@ -346,15 +360,23 @@ impl Parse {
         let (no_used, parsed) = context(
             "parse_identifier",
             alt((
-                nom::sequence::delimited(tag("\""), nom::bytes::complete::is_not("\""), tag("\"")),
-                nom::sequence::delimited(tag("'"), nom::bytes::complete::is_not("'"), tag("'")),
+                permutation((tag("\""), nom::bytes::complete::is_not("\""), tag("\""))),
+                permutation((tag("'"), nom::bytes::complete::is_not("'"), tag("'"))),
             )),
         )(input)?;
         Ok((
             no_used,
             // TODO  シングルクォーと・ダブルクォートの区別が必要
-            Node::Identifier(Identifier::new(format!("{}", parsed))),
+            Node::Identifier(Identifier::new(format!("{}", parsed.1))),
         ))
+    }
+
+    fn parse_reference(input: &str) -> IResult<&str, Node> {
+        let (no_used, parsed) = map(
+            permutation((tag("$"), Self::parse_constant)),
+            |(_, identifier)| Node::Reference(Box::new(Reference::new(identifier))),
+        )(input)?;
+        Ok((no_used, parsed))
     }
 
     fn parse_not_space(input: &str) -> IResult<&str, Node> {
@@ -408,6 +430,7 @@ impl Parse {
                 opt(many1(permutation((
                     take_while(|c: char| c == ' '),
                     alt((
+                        Self::parse_reference,
                         Self::parse_identifier, // "に囲まれている文字列
                         Self::parse_constant,
                     )),
@@ -445,6 +468,7 @@ impl Parse {
                         ))),
                         nom::character::complete::space0,
                         alt((
+                            Self::parse_reference,
                             Self::parse_identifier, // "に囲まれている文字列
                             Self::parse_constant,
                         )),
@@ -467,7 +491,7 @@ impl Parse {
                 Self::parse_constant,
                 tag("="),
                 alt((
-                    Self::parse_constant,
+                    Self::parse_reference,
                     Self::parse_identifier,
                     map(nom::character::complete::digit1, |digits: &str| {
                         Node::Identifier(Identifier::new(digits.to_string()))
@@ -669,6 +693,16 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_reference() {
+        let input = "$identifier";
+        let expected = Node::Reference(Box::new(Reference::new(Node::Identifier(
+            Identifier::new("identifier".to_string()),
+        ))));
+        let result = Parse::parse_reference(input).unwrap().1;
+        assert_eq!(result, expected);
+    }
+
+    #[test]
     fn test_parse_not_space() {
         let input = "not_space";
         let expected = Node::Identifier(Identifier::new("not_space".to_string()));
@@ -771,7 +805,7 @@ mod tests {
         let input = "var=\"value\"";
         let expected = Node::Define(Box::new(Define::new(
             Node::Identifier(Identifier::new("var".to_string())),
-            Node::Identifier(Identifier::new("value".to_string())),
+            Node::Identifier(Identifier::new("\"value\"".to_string())),
         )));
         let result = Parse::parse_define(input).unwrap().1;
         assert_eq!(result, expected);
@@ -958,7 +992,7 @@ mod tests {
         let input = "var=\"value\"";
         let expected = Node::Define(Box::new(Define::new(
             Node::Identifier(Identifier::new("var".to_string())),
-            Node::Identifier(Identifier::new("value".to_string())),
+            Node::Identifier(Identifier::new("\"value\"".to_string())),
         )));
         let result = Parse::parse_statement(input).unwrap().1;
         assert_eq!(result, expected);
@@ -1018,7 +1052,7 @@ mod tests {
         let expected = Node::CompoundStatement(CompoundStatement::new(vec![
             Node::Define(Box::new(Define::new(
                 Node::Identifier(Identifier::new("var".to_string())),
-                Node::Identifier(Identifier::new("value".to_string())),
+                Node::Identifier(Identifier::new("\"value\"".to_string())),
             ))),
             Node::CommandStatement(Box::new(CommandStatement::new(
                 Node::Identifier(Identifier::new("command".to_string())),

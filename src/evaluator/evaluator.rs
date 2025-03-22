@@ -3,7 +3,7 @@ use crate::error::error::{RshError, Status, StatusCode};
 use crate::log::log_maneger::csv_writer;
 use crate::parser::parse::{
     CommandStatement, CompoundStatement, Define, ExecScript, Identifier, Node, Pipeline, Redirect,
-    RedirectErrorOutput, RedirectInput, RedirectOutput,
+    RedirectErrorOutput, RedirectInput, RedirectOutput, Reference,
 };
 use crate::rsh::rsh::Rsh;
 
@@ -300,10 +300,26 @@ impl Evaluator {
     }
 
     fn eval_identifier(&self, expr: Identifier) -> String {
+        //format!("\"{}\"", expr.eval())
         expr.eval()
     }
 
-    fn eval_command(&mut self, expr: CommandStatement) {
+    fn eval_reference(&self, expr: Reference) -> Result<String, RshError> {
+        let value = match expr.get_reference() {
+            Node::Identifier(identifier) => {
+                let eval_result = self.eval_identifier(identifier);
+                eval_result.clone()
+            }
+            _ => String::new(),
+        };
+        if let Some(v) = self.memory.variables.get(&value) {
+            Ok(v.value.clone())
+        } else {
+            Err(RshError::new("Failed to get value"))
+        }
+    }
+
+    fn eval_command(&mut self, expr: CommandStatement) -> Result<(), RshError> {
         let command = match expr.get_command() {
             Node::Identifier(identifier) => self.eval_identifier(identifier.clone()),
             _ => {
@@ -315,9 +331,11 @@ impl Evaluator {
             .get_sub_command()
             .into_iter()
             .map(|node| match node {
-                Node::Identifier(identifier) => identifier.eval(),
-                _ => Default::default(), // Handle other cases appropriately
+                Node::Identifier(identifier) => Ok(identifier.eval()),
+                Node::Reference(reference) => self.eval_reference(*reference),
+                _ => Err(RshError::new("Failed to get sub command")),
             })
+            .filter_map(|result| result.ok())
             .collect::<Vec<String>>();
 
         let mut full_command = vec![command.clone()];
@@ -337,6 +355,8 @@ impl Evaluator {
                 //std::process::exit(0);
             }
         }
+
+        Ok(())
     }
 
     fn eval_define(&mut self, define: Define) {
@@ -345,11 +365,14 @@ impl Evaluator {
             _ => Default::default(), // Handle other cases appropriately
         };
         let data = match define.get_data() {
-            Node::Identifier(identifier) => self.eval_identifier(identifier),
-            _ => Default::default(), // Handle other cases appropriately
+            Node::Reference(reference) => self.eval_reference(*reference),
+            Node::Identifier(identifier) => Ok(self.eval_identifier(identifier)),
+            _ => Err(RshError::new("Failed to get data")),
         };
 
-        self.memory.push(Variable::new(var, data));
+        if let Ok(data) = data {
+            self.memory.push(Variable::new(var, data));
+        }
     }
 
     fn rsh_pipe_launch_from_node(&mut self, args: Vec<Node>) -> io::Result<Child> {
@@ -358,9 +381,9 @@ impl Evaluator {
         let mut std_err = Stdio::inherit();
 
         for command in args.clone() {
-            match command.get_node() {
+            let result = match command.get_node() {
                 Node::CommandStatement(command) => self.eval_command(*command),
-                Node::Redirect(redirect) => {
+                Node::Redirect(redirect) => Ok({
                     // リダイレクト処理
                     let co = match redirect.get_command().get_lhs() {
                         Node::Identifier(identifier) => self.eval_identifier(identifier.clone()),
@@ -390,9 +413,11 @@ impl Evaluator {
                         &mut std_out,
                         &mut std_err,
                     );
-                }
-                _ => println!("I don't know: {:?}", command),
-            }
+                }),
+                _ => Ok({
+                    println!("I don't know: {:?}", command);
+                }),
+            };
         }
         let mut itr = self.pipe_commands.clone().into_iter().peekable();
         unsafe {
@@ -571,7 +596,6 @@ impl Evaluator {
                 }
                 Node::Define(define) => {
                     self.eval_define(*define);
-                    println!("memory: {:?}", self.memory);
                 }
                 Node::ExecScript(script) => {
                     self.eval_exec_script(*script);
