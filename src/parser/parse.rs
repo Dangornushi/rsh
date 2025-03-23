@@ -1,13 +1,10 @@
 use nom::branch::{alt, permutation};
 use nom::bytes::complete::{tag, take_while};
-use nom::character::complete::{
-    alphanumeric0, line_ending, multispace0, multispace1, not_line_ending,
-};
-use nom::combinator::value;
+use nom::character::complete::{multispace0, not_line_ending};
 use nom::combinator::{map, opt};
 use nom::error::context;
 use nom::multi::{many0, many1};
-use nom::sequence::{preceded, terminated};
+use nom::sequence::preceded;
 use nom::IResult;
 
 /// 任意の式を表す

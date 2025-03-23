@@ -14,8 +14,6 @@ impl RshError {
 #[derive(Debug, PartialEq, Clone)]
 pub enum StatusCode {
     Success,
-    NotFound,
-    Failure,
     Exit,
 }
 #[derive(Debug, PartialEq)]
@@ -36,12 +34,13 @@ impl Status {
             exit_code: 0,
         }
     }
+    /*
     pub fn notfound() -> Status {
         Status {
             status_code: StatusCode::NotFound,
             exit_code: 101,
         }
-    }
+    }*/
     pub fn get_status_code(&self) -> StatusCode {
         self.status_code.clone()
     }

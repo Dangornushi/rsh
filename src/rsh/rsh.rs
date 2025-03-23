@@ -1,4 +1,4 @@
-use crate::error::error::{RshError, Status, StatusCode};
+use crate::error::error::{RshError, Status};
 use crate::evaluator;
 use crate::log::log_maneger::csv_reader;
 use crate::log::log_maneger::History;
@@ -334,11 +334,7 @@ impl Rsh {
         r_vec
     }
 
-    fn rsh_char_search(
-        &self,
-        search_string: String,
-        counter: &mut usize,
-    ) -> Result<String, RshError> {
+    fn rsh_get_command_database(&self, search_string: String) -> Vec<String> {
         let matches = self
             .command_database
             .iter()
@@ -354,6 +350,16 @@ impl Rsh {
         let mut filtered_commands: Vec<String> =
             history_matches.into_iter().map(|s| s.to_string()).collect();
         filtered_commands.extend(matches.map(|s| s.to_string()));
+
+        filtered_commands
+    }
+
+    fn rsh_char_search(
+        &self,
+        search_string: String,
+        counter: &mut usize,
+    ) -> Result<String, RshError> {
+        let filtered_commands = self.rsh_get_command_database(search_string.clone());
 
         match filtered_commands.len() {
             0 => {
@@ -698,6 +704,7 @@ impl Rsh {
         filtered_commands.extend(matches.map(|s| s.to_string()));
         filtered_commands
     }
+
     pub fn rsh_loop(&mut self) -> Result<Status, RshError> {
         let mut stdout = stdout();
 
@@ -732,6 +739,7 @@ impl Rsh {
                     self.rsh_move_cursor();
                 }
                 Mode::Input => {
+                    // Input モードの初期化
                     // 実行可能なコマンド一覧を取得
                     self.get_executable_commands();
 
@@ -754,10 +762,14 @@ impl Rsh {
 
                     self.get_directory_contents("./");
                     self.initializations_cursor_view(&mut stdout);
+                    // 文字が入力ごとにループが回る
+                    let autocomplete_suggestions =
+                        self.rsh_get_command_database(self.buffer.buffer.clone());
+
+                    let mut history_index = self.history_database.len();
 
                     loop {
                         // 文字が入力ごとにループが回る
-
                         // カーソルを指定の位置にずらす
                         execute!(
                             stdout,
@@ -777,6 +789,34 @@ impl Rsh {
                             })) = read()
                             {
                                 match code {
+                                    KeyCode::Up => {
+                                        // 履歴の中から一つ前のコマンドを取得
+                                        if 0 < history_index {
+                                            history_index -= 1;
+                                            self.buffer.buffer = self
+                                                .history_database
+                                                .get(history_index)
+                                                .unwrap()
+                                                .get_command()
+                                                .to_string();
+                                            self.cursor_x = self.buffer.buffer.len();
+                                            self.char_count = self.buffer.buffer.chars().count();
+                                        }
+                                    }
+                                    KeyCode::Down => {
+                                        // 履歴の中から一つ前のコマンドを取得
+                                        if 1 < history_index {
+                                            history_index += 1;
+                                            self.buffer.buffer = self
+                                                .history_database
+                                                .get(history_index)
+                                                .unwrap()
+                                                .get_command()
+                                                .to_string();
+                                            self.cursor_x = self.buffer.buffer.len();
+                                            self.char_count = self.buffer.buffer.chars().count();
+                                        }
+                                    }
                                     KeyCode::Esc => {
                                         self.now_mode = Mode::Nomal;
                                         break;
@@ -939,6 +979,8 @@ impl Rsh {
                         if filtered_commands.len() > 0 {
                             // 部分的に一致しているコマンドの先頭の要素からbufferから先を取得
                             let print_buf_suffix = self.rsh_split_line(
+                                // 　ここのインデックスを上下キーで変更する
+                                //                                filtered_commands[filtered_commands.len() - 1]
                                 filtered_commands[0][self.buffer.buffer.len()..].to_string(),
                             );
 

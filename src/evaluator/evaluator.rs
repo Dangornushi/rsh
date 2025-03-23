@@ -8,9 +8,8 @@ use crate::parser::parse::{
 use crate::rsh::rsh::Rsh;
 
 use std::any::Any;
-use std::env::args;
 use std::fs::File;
-use std::io::{self, ErrorKind};
+use std::io::{self};
 use std::io::{stdout, Read};
 use std::os::unix::io::{FromRawFd, IntoRawFd};
 use std::process::{Child, Command, Stdio};
@@ -190,10 +189,12 @@ impl Evaluator {
         std_out: Stdio,
         std_err: Stdio,
     ) -> io::Result<Child> {
-        let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        let path = self.rsh.open_profile(".rsh_history").unwrap();
+        /*
+                let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                let path = self.rsh.open_profile(".rsh_history").unwrap();
 
-        let _ = csv_writer(commands.join(" "), time, &path);
+                let _ = csv_writer(commands.join(" "), time, &path);
+        */
         Command::new(commands[0].clone())
             .args(&commands[1..])
             .stdin(std_in)
@@ -347,7 +348,7 @@ impl Evaluator {
                 if r.get_status_code() == StatusCode::Exit {
                     std::process::exit(0);
                 }
-                let return_code = r.get_exit_code();
+                let _ = r.get_exit_code();
                 //println!("Evaluator Exit: {}", return_code);
             }
             Err(err) => {
@@ -381,7 +382,7 @@ impl Evaluator {
         let mut std_err = Stdio::inherit();
 
         for command in args.clone() {
-            let result = match command.get_node() {
+            let _ = match command.get_node() {
                 Node::CommandStatement(command) => self.eval_command(*command),
                 Node::Redirect(redirect) => Ok({
                     // リダイレクト処理
@@ -578,7 +579,7 @@ impl Evaluator {
         if let Ok(mut file) = std::fs::File::open(var.clone()) {
             let mut contents = String::new();
             if let Ok(_) = file.read_to_string(&mut contents) {
-                let return_code = Rsh::execute_commands(&mut self.rsh, &mut contents);
+                let _ = Rsh::execute_commands(&mut self.rsh, &mut contents);
             } else {
                 println!("Failed to read the file contents");
             }
@@ -592,7 +593,7 @@ impl Evaluator {
         for s in expr {
             match s {
                 Node::CommandStatement(command) => {
-                    self.eval_command(*command);
+                    let _ = self.eval_command(*command);
                 }
                 Node::Define(define) => {
                     self.eval_define(*define);

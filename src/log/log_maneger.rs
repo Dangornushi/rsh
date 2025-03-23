@@ -3,8 +3,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::io::{self, BufRead};
 
-#[derive(PartialEq, Clone)]
-
+#[derive(PartialEq, Clone, Debug)]
 pub struct History {
     command: String,
     time: String,
