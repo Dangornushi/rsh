@@ -808,12 +808,6 @@ impl Rsh {
                                     }
                                     KeyCode::Down => {
                                         // 履歴の中から一つ前のコマンドを取得
-                                        println!(
-                                            "{}: {}, {:?}",
-                                            history_index,
-                                            self.history_database.len(),
-                                            history_buf,
-                                        );
                                         //  自分が履歴を見るまでターミナルに打ち込んでいた文字を反映
                                         if history_index + 1 == self.history_database.len() {
                                             self.buffer.buffer = history_buf.clone();
