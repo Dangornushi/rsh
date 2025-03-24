@@ -758,15 +758,13 @@ impl Rsh {
                     let mut pushed_tab = false;
                     let mut stack_buffer = String::new();
                     let mut tab_counter = 0;
-                    let mut space_counter = 0;
 
                     self.get_directory_contents("./");
                     self.initializations_cursor_view(&mut stdout);
                     // 文字が入力ごとにループが回る
-                    let autocomplete_suggestions =
-                        self.rsh_get_command_database(self.buffer.buffer.clone());
-
                     let mut history_index = self.history_database.len();
+                    let mut history_buf = String::new();
+                    let mut has_referenced_history = false;
 
                     loop {
                         // 文字が入力ごとにループが回る
@@ -790,8 +788,12 @@ impl Rsh {
                             {
                                 match code {
                                     KeyCode::Up => {
-                                        // 履歴の中から一つ前のコマンドを取得
+                                        // 初めて履歴を参照した時のみ打ち込まれていた文字を保存
+                                        if !has_referenced_history {
+                                            history_buf = self.buffer.buffer.clone();
+                                        }
                                         if 0 < history_index {
+                                            // 履歴の中から一つ前のコマンドを取得
                                             history_index -= 1;
                                             self.buffer.buffer = self
                                                 .history_database
@@ -801,11 +803,28 @@ impl Rsh {
                                                 .to_string();
                                             self.cursor_x = self.buffer.buffer.len();
                                             self.char_count = self.buffer.buffer.chars().count();
+                                            has_referenced_history = true;
                                         }
                                     }
                                     KeyCode::Down => {
                                         // 履歴の中から一つ前のコマンドを取得
-                                        if 1 < history_index {
+                                        println!(
+                                            "{}: {}, {:?}",
+                                            history_index,
+                                            self.history_database.len(),
+                                            history_buf,
+                                        );
+                                        //  自分が履歴を見るまでターミナルに打ち込んでいた文字を反映
+                                        if history_index + 1 == self.history_database.len() {
+                                            self.buffer.buffer = history_buf.clone();
+
+                                            self.cursor_x = self.buffer.buffer.len();
+                                            self.char_count = self.buffer.buffer.chars().count();
+                                            has_referenced_history = false;
+                                        }
+                                        if 1 < history_index
+                                            && history_index < self.history_database.len() - 1
+                                        {
                                             history_index += 1;
                                             self.buffer.buffer = self
                                                 .history_database
@@ -855,7 +874,6 @@ impl Rsh {
                                         pushed_tab = false;
                                         self.cursor_x += 1;
                                         self.char_count += 1;
-                                        space_counter += 1;
                                     }
                                     _ => {
                                         self.buffer.buffer = match code {
@@ -877,7 +895,6 @@ impl Rsh {
                                                             .nth(self.cursor_x - 1)
                                                             == Some(' ')
                                                         {
-                                                            space_counter -= 1;
                                                         }
                                                         self.buffer
                                                             .buffer
@@ -893,7 +910,6 @@ impl Rsh {
                                                         if buffer_graphemes.get(self.char_count - 1)
                                                             == Some(&" ")
                                                         {
-                                                            space_counter -= 1;
                                                         }
 
                                                         buffer_graphemes
