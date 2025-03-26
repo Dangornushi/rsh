@@ -12,6 +12,7 @@ use std::fs::File;
 use std::io::{self};
 use std::io::{stdout, Read};
 use std::os::unix::io::{FromRawFd, IntoRawFd};
+use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, Stdio};
 use std::{ffi::CString, io::Write};
 
@@ -98,7 +99,13 @@ impl Evaluator {
         }
     }
 
-    fn rsh_launch(&mut self, args: Vec<String>) -> Result<Status, RshError> {
+    fn rsh_launch(
+        &mut self,
+        commands: Vec<String>,
+        std_in: Stdio,
+        std_out: Stdio,
+        std_err: Stdio,
+    ) -> Result<Status, RshError> {
         let (pipe_read, pipe_write) = pipe().unwrap();
         let pid = fork().map_err(|_| RshError::new("fork failed"))?;
         match pid {
@@ -159,24 +166,27 @@ impl Evaluator {
                 // ------------------------------------------
 
                 // コマンドパース
-                let path = CString::new(args[0].to_string()).unwrap();
+                let mut command = Command::new(commands[0].clone());
 
-                let c_args: Vec<CString> = args
-                    .iter()
-                    .map(|s| CString::new(s.as_bytes()).unwrap())
-                    .collect();
-
-                match execvp(&path, &c_args) {
+                match command
+                    .args(&commands[1..])
+                    .stdin(std_in)
+                    .stdout(std_out)
+                    .stderr(std_err)
+                    .spawn()
+                {
                     Ok(_) => Ok(Status::success()),
-                    Err(err) => match err {
-                        nix::Error::Sys(errno) => match errno {
-                            Errno::ENOENT => Err(RshError::new(errno.desc())),
-                            _ => Err(RshError::new(format!("{:?}", errno.desc()).as_str())),
-                        },
-                        _ => Err(RshError::new(format!("{:?}", err).as_str())),
-                    },
+                    Err(err) => {
+                        Err(RshError::new(format!("{:?}", err).as_str()))
+                        /*
+                                                nix::Error::Sys(errno) => match errno {
+                                                    Errno::ENOENT => Err(RshError::new(errno.desc())),
+                                                    _ => Err(RshError::new(format!("{:?}", errno.desc()).as_str())),
+                                                },
+                                                _ => Err(RshError::new(format!("{:?}", err).as_str())),
+                        */
+                    }
                 }
-
                 // -------------
             }
         }
@@ -195,12 +205,23 @@ impl Evaluator {
 
                 let _ = csv_writer(commands.join(" "), time, &path);
         */
-        Command::new(commands[0].clone())
+        self.restore_tty_signals();
+        let mut command = Command::new(commands[0].clone());
+        command
             .args(&commands[1..])
             .stdin(std_in)
             .stdout(std_out)
-            .stderr(std_err)
-            .spawn()
+            .stderr(std_err);
+
+        unsafe {
+            command.pre_exec(|| {
+                let sa_default =
+                    SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
+                sigaction(Signal::SIGINT, &sa_default).unwrap();
+                Ok(())
+            });
+        }
+        command.spawn()
     }
 
     fn rsh_pipe_launch(
@@ -217,6 +238,7 @@ impl Evaluator {
                 if itr.peek().is_some() {
                     // 次にコマンドがアル場合パイプ処理を行う
                     let process = self.run(command, std_in, Stdio::piped(), Stdio::piped());
+                    //let process = self.run(command, std_in, Stdio::piped(), Stdio::piped());
                     std_in = Stdio::from_raw_fd(process.unwrap().stdout.unwrap().into_raw_fd());
                     // プロセスの標準出力を次のプロセスの標準入力にする
                 } else {
