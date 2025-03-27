@@ -176,16 +176,7 @@ impl Evaluator {
                     .spawn()
                 {
                     Ok(_) => Ok(Status::success()),
-                    Err(err) => {
-                        Err(RshError::new(format!("{:?}", err).as_str()))
-                        /*
-                                                nix::Error::Sys(errno) => match errno {
-                                                    Errno::ENOENT => Err(RshError::new(errno.desc())),
-                                                    _ => Err(RshError::new(format!("{:?}", errno.desc()).as_str())),
-                                                },
-                                                _ => Err(RshError::new(format!("{:?}", err).as_str())),
-                        */
-                    }
+                    Err(err) => Err(RshError::new(format!("{:?}", err).as_str())),
                 }
                 // -------------
             }
@@ -198,30 +189,73 @@ impl Evaluator {
         std_in: Stdio,
         std_out: Stdio,
         std_err: Stdio,
-    ) -> io::Result<Child> {
-        /*
-                let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                let path = self.rsh.open_profile(".rsh_history").unwrap();
-
-                let _ = csv_writer(commands.join(" "), time, &path);
-        */
+    ) -> Result<Child, RshError> {
         self.restore_tty_signals();
-        let mut command = Command::new(commands[0].clone());
-        command
-            .args(&commands[1..])
-            .stdin(std_in)
-            .stdout(std_out)
-            .stderr(std_err);
+        let (pipe_read, pipe_write) = pipe().unwrap();
+        let pid = fork().map_err(|_| RshError::new("fork failed"))?;
+        match pid {
+            ForkResult::Parent { child } => {
+                setpgid(child, child).unwrap();
+                tcsetpgrp(0, child).unwrap();
+                close(pipe_read).unwrap();
+                close(pipe_write).unwrap();
 
-        unsafe {
-            command.pre_exec(|| {
-                let sa_default =
-                    SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
-                sigaction(Signal::SIGINT, &sa_default).unwrap();
-                Ok(())
-            });
+                let wait_pid_result =
+                    waitpid(child, None).map_err(|err| RshError::new(&format!("waited: {}", err)));
+
+                tcsetpgrp(0, getpgrp()).unwrap();
+
+                Err(RshError::new("Unexpected return type from waitpid"))
+            }
+            ForkResult::Child => {
+                // シグナル系処理 ---------------------------
+                self.restore_tty_signals();
+
+                close(pipe_write).unwrap();
+
+                loop {
+                    let mut buf = [0];
+                    match nix::unistd::read(pipe_read, &mut buf) {
+                        Err(e) if e == nix::Error::Sys(Errno::EINTR) => (),
+                        _ => break,
+                    }
+                    unsafe {
+                        if libc::isatty(libc::STDIN_FILENO) == 1 {
+                            let mut sigset = SigSet::empty();
+                            sigset.add(Signal::SIGINT);
+                            sigset.add(Signal::SIGQUIT);
+                            sigset.add(Signal::SIGTERM);
+                            if sigset.contains(Signal::SIGINT) {
+                                libc::_exit(0);
+                            }
+                        }
+                    }
+                }
+                close(pipe_read).unwrap();
+                // ------------------------------------------
+
+                // コマンドパース
+                let mut command = Command::new(commands[0].clone());
+                command
+                    .args(&commands[1..])
+                    .stdin(std_in)
+                    .stdout(std_out)
+                    .stderr(std_err);
+
+                unsafe {
+                    command.pre_exec(|| {
+                        let sa_default =
+                            SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
+                        sigaction(Signal::SIGINT, &sa_default).unwrap();
+                        Ok(())
+                    });
+                }
+                command
+                    .spawn()
+                    .map_err(|err| RshError::new(format!("{:?}", err).as_str()))
+                // -------------
+            }
         }
-        command.spawn()
     }
 
     fn rsh_pipe_launch(
@@ -230,7 +264,7 @@ impl Evaluator {
         si: Stdio,
         stdout: Stdio,
         std_err: Stdio,
-    ) -> io::Result<Child> {
+    ) -> Result<Child, RshError> {
         let mut itr = args.into_iter().peekable();
         let mut std_in = si;
         unsafe {
@@ -292,20 +326,17 @@ impl Evaluator {
                         {
                             match self.now_process {
                                 Process::NoPipe => {
-                                    match self.run(
+                                    match self.rsh_launch(
                                         args,
                                         Stdio::inherit(),
                                         Stdio::inherit(),
                                         Stdio::inherit(),
                                     ) {
-                                        Ok(mut child) => {
-                                            let _ = child.wait();
-                                            Ok(Status::success())
-                                        }
                                         Err(err) => {
-                                            println!("Error: {}", err);
+                                            println!("Error: {:?}", err);
                                             Err(RshError::new("Failed to run command"))
                                         }
+                                        _ => Ok(Status::success()),
                                     }
                                 }
                                 Process::Pipe => {
@@ -398,7 +429,7 @@ impl Evaluator {
         }
     }
 
-    fn rsh_pipe_launch_from_node(&mut self, args: Vec<Node>) -> io::Result<Child> {
+    fn rsh_pipe_launch_from_node(&mut self, args: Vec<Node>) -> Result<Child, RshError> {
         let mut std_in = Stdio::inherit();
         let mut std_out = Stdio::inherit();
         let mut std_err = Stdio::inherit();
@@ -469,7 +500,7 @@ impl Evaluator {
                 let _ = child.wait();
             }
             Err(err) => {
-                println!("Error: {}", err);
+                println!("Error: {:?}", err);
             }
         };
 
@@ -579,7 +610,7 @@ impl Evaluator {
                 let _ = child.wait();
             }
             Err(err) => {
-                println!("Error:> {}", err);
+                println!("Error:> {:?}", err);
             }
         };
     }
