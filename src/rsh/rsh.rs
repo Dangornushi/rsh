@@ -1,6 +1,7 @@
 use crate::error::error::{RshError, Status};
 use crate::evaluator;
 use crate::log::log_maneger::csv_reader;
+use crate::log::log_maneger::csv_writer;
 use crate::log::log_maneger::History;
 use crate::parser::parse::Parse;
 use nix::sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal};
@@ -1031,6 +1032,14 @@ impl Rsh {
                     disable_raw_mode().unwrap();
                     // コマンドの実行
                     let mut buffer = &mut self.buffer.buffer.clone();
+
+                    // CSV
+                    let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                    let path = self
+                        .open_profile(".rsh_history")
+                        .map(|path| csv_writer(buffer.clone(), time, &path));
+                    // ---
+
                     self.execute_commands(&mut buffer);
                     self.buffer.buffer.clear();
                     enable_raw_mode().unwrap();

@@ -1,32 +1,166 @@
 use crate::command;
 use crate::error::error::{RshError, Status, StatusCode};
-use crate::log::log_maneger::csv_writer;
 use crate::parser::parse::{
     CommandStatement, CompoundStatement, Define, ExecScript, Identifier, Node, Pipeline, Redirect,
-    RedirectErrorOutput, RedirectInput, RedirectOutput, Reference,
+    RedirectErrorOutput, RedirectErrorOutputAppend, RedirectInput, RedirectOutput,
+    RedirectOutputAppend, Reference,
 };
 use crate::rsh::rsh::Rsh;
-
-use std::any::Any;
+use nix::libc;
+use nix::sys::wait::wait;
+use nix::unistd::{close, dup2, fork, pipe, ForkResult};
+use std::ffi::CString;
 use std::fs::File;
-use std::io::{self};
-use std::io::{stdout, Read};
-use std::os::unix::io::{FromRawFd, IntoRawFd};
-use std::os::unix::process::CommandExt;
-use std::process::{Child, Command, Stdio};
-use std::{ffi::CString, io::Write};
+use std::os::unix::io::AsRawFd;
+use std::os::unix::io::RawFd;
 
 use crossterm::{execute, style::Print};
-use nix::{
-    errno::Errno,
-    libc,
-    sys::{
-        signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal},
-        wait::*,
-    },
-    unistd::{close, execvp, fork, getpgrp, pipe, setpgid, tcsetpgrp, ForkResult},
-};
+use std::any::Any;
 use std::collections::HashMap;
+use std::fs::OpenOptions;
+use std::io::Read;
+use std::io::{stdout, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+// リダイレクト
+#[derive(Debug, Clone)]
+enum OutputOption {
+    Append,
+    Overwrite,
+}
+#[derive(Debug, Clone)]
+pub struct OutputBool {
+    option: OutputOption,
+    is_enable: bool,
+}
+impl OutputBool {
+    fn new() -> OutputBool {
+        OutputBool {
+            option: OutputOption::Overwrite,
+            is_enable: false,
+        }
+    }
+    fn enable(&mut self, option: OutputOption) {
+        self.is_enable = true;
+        self.option = option
+    }
+}
+#[derive(Debug, Clone)]
+struct RedirectFD {
+    input: String,
+    output: String,
+    error: String,
+
+    pub do_redirect_input: bool,
+    pub do_redirect_output: OutputBool,
+    pub do_redirect_error: OutputBool,
+}
+
+impl RedirectFD {
+    fn new() -> RedirectFD {
+        RedirectFD {
+            input: String::new(),
+            output: String::new(),
+            error: String::new(),
+            do_redirect_input: false,
+            do_redirect_output: OutputBool::new(),
+            do_redirect_error: OutputBool::new(),
+        }
+    }
+
+    pub fn input(&self) {
+        let file = File::open(self.input.clone()).expect("Failed to create output file");
+        let fd = file.as_raw_fd();
+
+        // Redirect stdin to the given file descriptor
+        if let Err(err) = dup2(fd, libc::STDIN_FILENO) {
+            eprintln!("Failed to redirect input: {}", err);
+        }
+    }
+
+    pub fn output(&self) {
+        if !self.do_redirect_output.is_enable {
+            return;
+        }
+
+        let f = match self.do_redirect_output.option.clone() {
+            OutputOption::Append => {
+                // Open a file to use as output
+                OpenOptions::new()
+                    .create(true) // ファイルが存在しない場合は作成
+                    .append(true) // 既存の内容に追加
+                    .open(self.output.clone())
+                    .expect("Failed to open output file in append mode")
+            }
+            OutputOption::Overwrite => {
+                // Open a file to use as output
+                File::create(self.output.clone()).expect("Failed to create output file")
+            }
+        };
+        let fd = f.as_raw_fd();
+
+        // Redirect stderr to the given file descriptor
+        if let Err(err) = dup2(fd, libc::STDOUT_FILENO) {
+            eprintln!("Failed to redirect error output: {}", err);
+        }
+    }
+
+    pub fn error(&self) {
+        if !self.do_redirect_error.is_enable {
+            return;
+        }
+
+        let f = match self.do_redirect_error.option.clone() {
+            OutputOption::Append => {
+                // Open a file to use as output
+                OpenOptions::new()
+                    .create(true) // ファイルが存在しない場合は作成
+                    .append(true) // 既存の内容に追加
+                    .open(self.error.clone())
+                    .expect("Failed to open output file in append mode")
+            }
+            OutputOption::Overwrite => {
+                // Open a file to use as output
+                File::create(self.error.clone()).expect("Failed to create output file")
+            }
+        };
+        let fd = f.as_raw_fd();
+
+        // Redirect stderr to the given file descriptor
+        if let Err(err) = dup2(fd, libc::STDERR_FILENO) {
+            eprintln!("Failed to redirect error output: {}", err);
+        }
+    }
+}
+
+impl Drop for RedirectFD {
+    fn drop(&mut self) {
+        // 標準出力を元に戻す
+        if let Err(err) = dup2(libc::STDOUT_FILENO, libc::STDOUT_FILENO) {
+            eprintln!("Failed to reset output: {}", err);
+        }
+
+        // 標準エラー出力を元に戻す
+        if let Err(err) = dup2(libc::STDERR_FILENO, libc::STDERR_FILENO) {
+            eprintln!("Failed to reset error output: {}", err);
+        }
+
+        // 標準入力を元に戻す
+        if let Err(err) = dup2(libc::STDIN_FILENO, libc::STDIN_FILENO) {
+            eprintln!("Failed to reset input: {}", err);
+        }
+
+        self.input.clear();
+        self.output.clear();
+        self.error.clear();
+
+        self.do_redirect_input = false;
+        self.do_redirect_output = OutputBool::new();
+        self.do_redirect_error = OutputBool::new();
+    }
+}
+// -------------------------------------------------------------
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Variable {
@@ -63,294 +197,153 @@ impl Memory {
         }
     }
 }
-
-enum Process {
-    Pipe,
-    NoPipe,
-}
-
 pub struct Evaluator {
     rsh: Rsh,
-    now_process: Process,
-    pipe_commands: Vec<Vec<String>>,
     memory: Memory,
+    redirect: RedirectFD,
 }
 
 impl Evaluator {
     pub fn new(rsh: Rsh) -> Self {
         Evaluator {
             rsh,
-            now_process: Process::NoPipe,
-            pipe_commands: Vec::new(),
             memory: Memory::new(),
+            redirect: RedirectFD::new(),
         }
     }
 
-    fn switch_process(&mut self, process: Process) {
-        self.now_process = process;
+    fn setup_signal_handler(&self) -> Arc<AtomicBool> {
+        let running = Arc::new(AtomicBool::new(true));
+        let r = running.clone();
+
+        // Set up a signal handler for SIGINT (Ctrl+C)
+        signal_hook::flag::register(signal_hook::consts::SIGINT, r.clone())
+            .expect("Failed to register SIGINT handler");
+
+        running
     }
 
-    fn restore_tty_signals(&self) {
-        let sa = SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
-        unsafe {
-            sigaction(Signal::SIGTSTP, &sa).unwrap();
-            sigaction(Signal::SIGTTIN, &sa).unwrap();
-            sigaction(Signal::SIGTTOU, &sa).unwrap();
+    fn run(&self, commands: Vec<Vec<String>>, redirect: RedirectFD) -> Result<Status, RshError> {
+        // 組み込みコマンドの実行
+        if commands.is_empty() {
+            return Ok(Status::success());
         }
-    }
 
-    fn rsh_launch(
-        &mut self,
-        commands: Vec<String>,
-        std_in: Stdio,
-        std_out: Stdio,
-        std_err: Stdio,
-    ) -> Result<Status, RshError> {
-        let (pipe_read, pipe_write) = pipe().unwrap();
-        let pid = fork().map_err(|_| RshError::new("fork failed"))?;
-        match pid {
-            ForkResult::Parent { child } => {
-                setpgid(child, child).unwrap();
-                tcsetpgrp(0, child).unwrap();
-                close(pipe_read).unwrap();
-                close(pipe_write).unwrap();
-
-                let wait_pid_result =
-                    waitpid(child, None).map_err(|err| RshError::new(&format!("waited: {}", err)));
-
-                tcsetpgrp(0, getpgrp()).unwrap();
-
-                match wait_pid_result {
-                    Ok(WaitStatus::Exited(_, return_code)) => {
-                        // ui
-                        match return_code {
-                            0 => Ok(Status::success()),
-                            1 => Err(RshError::new("not found")),
-                            _ => Err(RshError::new("somthing wrong")),
-                        }
-                    }
-                    Ok(WaitStatus::Signaled(_, _, _)) => Ok(Status::success()),
-                    Err(err) => {
-                        println!("parent err: {}", err.message);
-                        //self.eprintln(&format!("rsh: {}", err.message));
-                        Err(err)
-                    }
-                    _ => Ok(Status::success()),
-                }
-            }
-            ForkResult::Child => {
-                // シグナル系処理 ---------------------------
-                self.restore_tty_signals();
-
-                close(pipe_write).unwrap();
-
-                loop {
-                    let mut buf = [0];
-                    match nix::unistd::read(pipe_read, &mut buf) {
-                        Err(e) if e == nix::Error::Sys(Errno::EINTR) => (),
-                        _ => break,
-                    }
-                    unsafe {
-                        if libc::isatty(libc::STDIN_FILENO) == 1 {
-                            let mut sigset = SigSet::empty();
-                            sigset.add(Signal::SIGINT);
-                            sigset.add(Signal::SIGQUIT);
-                            sigset.add(Signal::SIGTERM);
-                            if sigset.contains(Signal::SIGINT) {
-                                libc::_exit(0);
-                            }
-                        }
-                    }
-                }
-                close(pipe_read).unwrap();
-                // ------------------------------------------
-
-                // コマンドパース
-                let mut command = Command::new(commands[0].clone());
-
-                match command
-                    .args(&commands[1..])
-                    .stdin(std_in)
-                    .stdout(std_out)
-                    .stderr(std_err)
-                    .spawn()
-                {
-                    Ok(_) => Ok(Status::success()),
-                    Err(err) => Err(RshError::new(format!("{:?}", err).as_str())),
-                }
-                // -------------
-            }
-        }
-    }
-
-    fn run(
-        &mut self,
-        commands: Vec<String>,
-        std_in: Stdio,
-        std_out: Stdio,
-        std_err: Stdio,
-    ) -> Result<Child, RshError> {
-        self.restore_tty_signals();
-        let (pipe_read, pipe_write) = pipe().unwrap();
-        let pid = fork().map_err(|_| RshError::new("fork failed"))?;
-        match pid {
-            ForkResult::Parent { child } => {
-                setpgid(child, child).unwrap();
-                tcsetpgrp(0, child).unwrap();
-                close(pipe_read).unwrap();
-                close(pipe_write).unwrap();
-
-                let wait_pid_result =
-                    waitpid(child, None).map_err(|err| RshError::new(&format!("waited: {}", err)));
-
-                tcsetpgrp(0, getpgrp()).unwrap();
-
-                Err(RshError::new("Unexpected return type from waitpid"))
-            }
-            ForkResult::Child => {
-                // シグナル系処理 ---------------------------
-                self.restore_tty_signals();
-
-                close(pipe_write).unwrap();
-
-                loop {
-                    let mut buf = [0];
-                    match nix::unistd::read(pipe_read, &mut buf) {
-                        Err(e) if e == nix::Error::Sys(Errno::EINTR) => (),
-                        _ => break,
-                    }
-                    unsafe {
-                        if libc::isatty(libc::STDIN_FILENO) == 1 {
-                            let mut sigset = SigSet::empty();
-                            sigset.add(Signal::SIGINT);
-                            sigset.add(Signal::SIGQUIT);
-                            sigset.add(Signal::SIGTERM);
-                            if sigset.contains(Signal::SIGINT) {
-                                libc::_exit(0);
-                            }
-                        }
-                    }
-                }
-                close(pipe_read).unwrap();
-                // ------------------------------------------
-
-                // コマンドパース
-                let mut command = Command::new(commands[0].clone());
-                command
-                    .args(&commands[1..])
-                    .stdin(std_in)
-                    .stdout(std_out)
-                    .stderr(std_err);
-
-                unsafe {
-                    command.pre_exec(|| {
-                        let sa_default =
-                            SigAction::new(SigHandler::SigDfl, SaFlags::empty(), SigSet::empty());
-                        sigaction(Signal::SIGINT, &sa_default).unwrap();
-                        Ok(())
-                    });
-                }
-                command
-                    .spawn()
-                    .map_err(|err| RshError::new(format!("{:?}", err).as_str()))
-                // -------------
-            }
-        }
-    }
-
-    fn rsh_pipe_launch(
-        &mut self,
-        args: Vec<Vec<String>>,
-        si: Stdio,
-        stdout: Stdio,
-        std_err: Stdio,
-    ) -> Result<Child, RshError> {
-        let mut itr = args.into_iter().peekable();
-        let mut std_in = si;
-        unsafe {
-            while let Some(command) = itr.next() {
-                if itr.peek().is_some() {
-                    // 次にコマンドがアル場合パイプ処理を行う
-                    let process = self.run(command, std_in, Stdio::piped(), Stdio::piped());
-                    //let process = self.run(command, std_in, Stdio::piped(), Stdio::piped());
-                    std_in = Stdio::from_raw_fd(process.unwrap().stdout.unwrap().into_raw_fd());
-                    // プロセスの標準出力を次のプロセスの標準入力にする
+        match commands[0][0].as_str() {
+            // cd: ディレクトリ移動の組み込みコマンド
+            "cd" => {
+                match command::cd::rsh_cd(if let Option::Some(dir) = commands[0].get(1) {
+                    dir
                 } else {
-                    // 一つだけのコマンドを行う
-                    return self.run(command, std_in, stdout, std_err);
+                    execute!(stdout(), Print("\n")).unwrap();
+                    std::io::stdout().flush().unwrap();
+                    "./"
+                }) {
+                    Err(err) => {
+                        self.rsh.eprintln(&format!("Error: {}", err.message));
+                        return Ok(Status::success());
+                    }
+                    _ => return Ok(Status::success()),
                 }
             }
-        }
-        unreachable!();
-    }
-
-    pub fn rsh_execute(&mut self, args: Vec<String>) -> Result<Status, RshError> {
-        if let Option::Some(arg) = args.get(0) {
-            let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-            let path = self.rsh.open_profile(".rsh_history")?;
-
-            let _ = csv_writer(args.join(" "), time, &path);
-
-            match arg.as_str() {
-                r => match r {
-                    // cd: ディレクトリ移動の組み込みコマンド
-                    "cd" => match command::cd::rsh_cd(if let Option::Some(dir) = args.get(1) {
-                        dir
-                    } else {
-                        execute!(stdout(), Print("\n")).unwrap();
-                        std::io::stdout().flush().unwrap();
-                        "./"
-                    }) {
-                        Err(err) => {
-                            self.rsh.eprintln(&format!("Error: {}", err.message));
-                            Ok(Status::success())
-                        }
-                        _ => Ok(Status::success()),
-                    },
-                    // ロゴ表示
-                    "%logo" => command::logo::rsh_logo(),
-                    // history: 履歴表示の組み込みコマンド
-                    "%fl" => command::history::rsh_history(self.rsh.get_history_database())
-                        .map(|_| Status::success()),
-                    // exit: 終了用の組み込みコマンド
-                    "exit" => command::exit::rsh_exit(),
-                    // none: 何もなければコマンド実行
-                    _ => {
-                        #[cfg(test)]
-                        {
-                            // テスト時には何もしない
-                            println!("test");
-                            Ok(Status::success())
-                        }
-                        #[cfg(not(test))]
-                        {
-                            match self.now_process {
-                                Process::NoPipe => {
-                                    match self.rsh_launch(
-                                        args,
-                                        Stdio::inherit(),
-                                        Stdio::inherit(),
-                                        Stdio::inherit(),
-                                    ) {
-                                        Err(err) => {
-                                            println!("Error: {:?}", err);
-                                            Err(RshError::new("Failed to run command"))
-                                        }
-                                        _ => Ok(Status::success()),
-                                    }
-                                }
-                                Process::Pipe => {
-                                    self.pipe_commands.push(args);
-                                    Ok(Status::success())
-                                }
-                            }
-                        }
-                    }
-                },
+            // ロゴ表示
+            "%logo" => return command::logo::rsh_logo(),
+            // history: 履歴表示の組み込みコマンド
+            "%fl" => {
+                return command::history::rsh_history(self.rsh.get_history_database())
+                    .map(|_| Status::success())
             }
-        } else {
-            return Err(RshError::new("Failed to get args"));
+            // exit: 終了用の組み込みコマンド
+            "exit" => return command::exit::rsh_exit(),
+            // none: 何もなければコマンド実行
+            _ => {}
+        };
+        // それ以外のコマンドのための処理
+        let pipe_count = commands.len() - 1;
+
+        let mut pfd: Vec<(RawFd, RawFd)> = Vec::new();
+
+        for _ in 0..pipe_count {
+            pfd.push(pipe().expect("Failed to create pipe"));
         }
+
+        // コマンドたちの解析
+        for i in 0..=pipe_count {
+            // コマンドの実行
+            match fork() {
+                Ok(ForkResult::Child) => {
+                    redirect.error();
+                    // Child process
+                    if i == 0 && redirect.do_redirect_input {
+                        // First command, no input redirection
+                        redirect.input();
+                    }
+                    if i == pipe_count {
+                        redirect.output();
+                    }
+                    if i < pipe_count {
+                        // 今のコマンドの出力をパイプに設定
+                        dup2(pfd[i].1, 1).expect("Failed to duplicate file descriptor");
+                    }
+                    if i > 0 {
+                        dup2(pfd[i - 1].0, 0).expect("Failed to duplicate file descriptor");
+                    }
+
+                    // Close all pipe file descriptors
+                    for &(read_fd, write_fd) in &pfd {
+                        close(read_fd).ok();
+                        close(write_fd).ok();
+                    }
+
+                    // Execute the command
+                    let cmd =
+                        CString::new(commands[i][0].as_str()).expect("Failed to create CString");
+                    let args: Vec<CString> = commands[i]
+                        .iter()
+                        .map(|arg| CString::new(arg.as_str()).expect("Failed to create CString"))
+                        .collect();
+
+                    match nix::unistd::execvp(&cmd, &args) {
+                        Err(err) => {
+                            eprintln!("Command not found -> '{}' is {}", commands[i][0], err)
+                        }
+                        Ok(_) => {}
+                    }
+                }
+                Ok(ForkResult::Parent { .. }) => {
+                    // Parent process
+                    // 実行したコマンドがパイプの終端ではない
+                    if i < pipe_count {
+                        // Close the write end of the current pipe
+                        // 今のコマンドの出力を閉じる
+                        close(pfd[i].1).ok();
+                    }
+                    // 実行したコマンドがパイプの始端ではない
+                    if i > 0 {
+                        // 前のコマンドの入力と出力を閉じる
+                        close(pfd[i - 1].0).ok();
+                        close(pfd[i - 1].1).ok();
+                    }
+                }
+                Err(_) => {
+                    eprintln!("Fork failed");
+                    std::process::exit(1);
+                }
+            };
+        }
+
+        // Close remaining pipe file descriptors in the parent
+        for &(read_fd, write_fd) in &pfd {
+            close(read_fd).ok();
+            close(write_fd).ok();
+        }
+
+        // Wait for all child processes to finish
+        for _ in 0..=pipe_count {
+            wait().ok();
+        }
+
+        Ok(Status::success())
     }
 
     fn eval_identifier(&self, expr: Identifier) -> String {
@@ -373,13 +366,10 @@ impl Evaluator {
         }
     }
 
-    fn eval_command(&mut self, expr: CommandStatement) -> Result<(), RshError> {
+    fn command_statement_to_vec(&self, expr: CommandStatement) -> Result<Vec<String>, RshError> {
         let command = match expr.get_command() {
             Node::Identifier(identifier) => self.eval_identifier(identifier.clone()),
-            _ => {
-                // Provide a default value or handle the case where the command is not an identifier
-                Default::default() // Replace with an appropriate default value
-            }
+            _ => return Err(RshError::new("Failed to get main command")),
         };
         let sub_command = expr
             .get_sub_command()
@@ -394,21 +384,31 @@ impl Evaluator {
 
         let mut full_command = vec![command.clone()];
         full_command.extend(sub_command);
+        Ok(full_command)
+    }
+
+    fn eval_command(&mut self, expr: CommandStatement) -> Result<(), RshError> {
+        let full_command = self.command_statement_to_vec(expr)?;
 
         // 分割したコマンドを実行
-        match self.rsh_execute(full_command.clone()) {
-            Ok(r) => {
-                if r.get_status_code() == StatusCode::Exit {
-                    std::process::exit(0);
+        let running = self.setup_signal_handler();
+        let mut result = Status::new(StatusCode::Success, 0);
+        while running.load(Ordering::SeqCst) {
+            match self.run(vec![full_command.clone()], self.redirect.clone()) {
+                Ok(r) => {
+                    result = r;
                 }
-                let _ = r.get_exit_code();
-                //println!("Evaluator Exit: {}", return_code);
+                Err(err) => {
+                    println!("command:'{:?}' is {}", full_command, err.message);
+                }
             }
-            Err(err) => {
-                println!("command:'{}' is {}", command, err.message);
-                //std::process::exit(0);
-            }
+            break;
         }
+
+        if result.get_status_code() == StatusCode::Exit {
+            std::process::exit(result.get_exit_code());
+        }
+        let _ = result.get_exit_code();
 
         Ok(())
     }
@@ -429,190 +429,162 @@ impl Evaluator {
         }
     }
 
-    fn rsh_pipe_launch_from_node(&mut self, args: Vec<Node>) -> Result<Child, RshError> {
-        let mut std_in = Stdio::inherit();
-        let mut std_out = Stdio::inherit();
-        let mut std_err = Stdio::inherit();
+    fn eval_pipeline(&mut self, pipeline: Pipeline) {
+        // パイプライン処理
+        let mut commands = Vec::new();
 
-        for command in args.clone() {
-            let _ = match command.get_node() {
-                Node::CommandStatement(command) => self.eval_command(*command),
-                Node::Redirect(redirect) => Ok({
-                    // リダイレクト処理
-                    let co = match redirect.get_command().get_lhs() {
-                        Node::Identifier(identifier) => self.eval_identifier(identifier.clone()),
-                        _ => {
-                            Default::default() // Replace with an appropriate default value
+        for command in pipeline.get_commands() {
+            match command {
+                Node::CommandStatement(command) => {
+                    if let Ok(command) = self.command_statement_to_vec(*command) {
+                        commands.push(command);
+                    }
+                }
+                Node::Redirect(redirect) => {
+                    self.eval_redirect_branch(redirect.get_destination());
+                    if let Ok(command) = match redirect.get_command() {
+                        Node::CommandStatement(command) => {
+                            self.command_statement_to_vec(*command.clone())
                         }
-                    };
-                    let sub_co = redirect
-                        .get_command()
-                        .get_rhs()
-                        .into_iter()
-                        .map(|node| match node {
-                            Node::Identifier(identifier) => identifier.eval(),
-                            _ => Default::default(), // Handle other cases appropriately
-                        })
-                        .collect::<Vec<String>>();
-
-                    let mut full_command = vec![co];
-                    full_command.extend(sub_co);
-                    self.pipe_commands.push(full_command);
-
-                    // リダイレクト処理
-
-                    self.eval_redirect_branch(
-                        redirect.get_destination(),
-                        &mut std_in,
-                        &mut std_out,
-                        &mut std_err,
-                    );
-                }),
-                _ => Ok({
-                    println!("I don't know: {:?}", command);
-                }),
-            };
-        }
-        let mut itr = self.pipe_commands.clone().into_iter().peekable();
-        unsafe {
-            while let Some(command) = itr.next() {
-                if itr.peek().is_some() {
-                    // 次にコマンドがアル場合パイプ処理を行う
-                    let process = self.run(command, std_in, Stdio::piped(), Stdio::piped());
-                    // プロセスの標準出力を次のプロセスの標準入力にする
-                    std_in = Stdio::from_raw_fd(process.unwrap().stdout.unwrap().into_raw_fd());
-                } else {
-                    // 一つだけのコマンドを行う
-                    return self.run(command, std_in, std_out, std_err);
+                        _ => Err(RshError::new(
+                            "Expected CommandStatement, found other Node type",
+                        )),
+                    } {
+                        commands.push(command);
+                    }
+                }
+                _ => {
+                    println!("pipeline < I don't know: {:?}", command);
                 }
             }
         }
 
-        unreachable!();
+        // 分割したコマンドを実行
+        let running = self.setup_signal_handler();
+        let mut result = Status::new(StatusCode::Success, 0);
+        while running.load(Ordering::SeqCst) {
+            match self.run(commands.clone(), self.redirect.clone()) {
+                Ok(r) => {
+                    result = r;
+                }
+                Err(err) => {
+                    println!("command:'{:?}' is {}", commands, err.message);
+                }
+            }
+            break;
+        }
+
+        if result.get_status_code() == StatusCode::Exit {
+            std::process::exit(result.get_exit_code());
+        }
+        let _ = result.get_exit_code();
     }
 
-    fn eval_pipeline(&mut self, pipeline: Pipeline) {
-        self.switch_process(Process::Pipe);
-        self.pipe_commands.clear();
-        // パイプライン処理
-        match self.rsh_pipe_launch_from_node(pipeline.get_commands()) {
-            Ok(mut child) => {
-                let _ = child.wait();
-            }
-            Err(err) => {
-                println!("Error: {:?}", err);
+    fn eval_redirect_input(&mut self, input: RedirectInput) {
+        // リダイレクト処理
+        self.redirect.input = match input.get_destination() {
+            Node::Identifier(identifier) => self.eval_identifier(identifier),
+            _ => {
+                println!("redirect error: {:?}", input);
+                unreachable!()
             }
         };
-
-        self.pipe_commands.clear();
-        self.switch_process(Process::NoPipe);
+        self.redirect.do_redirect_input = true;
     }
 
-    fn eval_redirect_branch(
-        &mut self,
-        destinations: Vec<Node>,
-        std_in: &mut Stdio,
-        std_out: &mut Stdio,
-        std_err: &mut Stdio,
-    ) -> impl Any {
+    fn eval_redirect_output(&mut self, input: RedirectOutput) {
+        // リダイレクト処理
+        self.redirect.output = match input.get_destination() {
+            Node::Identifier(identifier) => self.eval_identifier(identifier),
+            _ => {
+                println!("redirect error: {:?}", input);
+                unreachable!()
+            }
+        };
+        self.redirect
+            .do_redirect_output
+            .enable(OutputOption::Overwrite);
+    }
+
+    fn eval_redirect_output_append(&mut self, input: RedirectOutputAppend) {
+        // リダイレクト処理
+        self.redirect.output = match input.get_destination() {
+            Node::Identifier(identifier) => self.eval_identifier(identifier),
+            _ => {
+                println!("redirect error: {:?}", input);
+                unreachable!()
+            }
+        };
+        self.redirect
+            .do_redirect_output
+            .enable(OutputOption::Append);
+    }
+
+    fn eval_redirect_error_output(&mut self, input: RedirectErrorOutput) {
+        // リダイレクト処理
+        self.redirect.error = match input.get_destination() {
+            Node::Identifier(identifier) => self.eval_identifier(identifier),
+            _ => {
+                println!("redirect error: {:?}", input);
+                unreachable!()
+            }
+        };
+        self.redirect
+            .do_redirect_error
+            .enable(OutputOption::Overwrite);
+    }
+
+    fn eval_redirect_error_output_append(&mut self, input: RedirectErrorOutputAppend) {
+        // リダイレクト処理
+        self.redirect.error = match input.get_destination() {
+            Node::Identifier(identifier) => self.eval_identifier(identifier),
+            _ => {
+                println!("redirect error: {:?}", input);
+                unreachable!()
+            }
+        };
+        self.redirect.do_redirect_error.enable(OutputOption::Append);
+    }
+
+    // Redirect構造体にファイル名を格納、Self.runの際にインスタンスを渡す
+    fn eval_redirect_branch(&mut self, destinations: Vec<Node>) -> impl Any {
         // リダイレクト処理
 
         for destination in destinations {
             match destination {
                 Node::RedirectInput(destination) => {
-                    let d = self.eval_redirect_input(*destination.clone());
-                    let file = File::open(d.clone()).unwrap();
-                    // 入力操作
-                    *std_in = Stdio::from(file);
+                    self.eval_redirect_input(*destination.clone());
                 }
                 Node::RedirectOutput(destination) => {
-                    let d = self.eval_redirect_output(*destination.clone());
-                    let file = File::create(d).unwrap();
-                    // 出力操作
-                    *std_out = Stdio::from(file);
+                    self.eval_redirect_output(*destination.clone());
+                }
+                Node::RedirectOutputAppend(destination) => {
+                    self.eval_redirect_output_append(*destination.clone());
                 }
                 Node::RedirectErrorOutput(destination) => {
-                    let d = self.eval_redirect_error_output(*destination.clone());
-                    let file = File::create(d).unwrap();
-                    // 出力操作
-                    *std_err = Stdio::from(file);
+                    self.eval_redirect_error_output(*destination.clone());
+                }
+                Node::RedirectErrorOutputAppend(destination) => {
+                    self.eval_redirect_error_output_append(*destination.clone());
                 }
                 _ => println!("other: {:?}", destination), // Handle other cases appropriately
             };
         }
-    }
-
-    fn eval_redirect_input(&mut self, input: RedirectInput) -> String {
-        // リダイレクト処理
-        match input.get_destination() {
-            Node::Identifier(identifier) => self.eval_identifier(identifier),
-            _ => {
-                println!("redirect error: {:?}", input);
-                unreachable!()
-            }
-        }
-    }
-
-    fn eval_redirect_output(&mut self, input: RedirectOutput) -> String {
-        // リダイレクト処理
-        match input.get_destination() {
-            Node::Identifier(identifier) => self.eval_identifier(identifier),
-            _ => {
-                println!("redirect error: {:?}", input);
-                unreachable!()
-            }
-        }
-    }
-
-    fn eval_redirect_error_output(&mut self, input: RedirectErrorOutput) -> String {
-        // リダイレクト処理
-        match input.get_destination() {
-            Node::Identifier(identifier) => self.eval_identifier(identifier),
-            _ => {
-                println!("redirect error: {:?}", input);
-                unreachable!()
-            }
-        }
+        /**/
     }
 
     fn eval_redirect(&mut self, input: Redirect) {
-        let command = match input.get_command().get_lhs() {
-            Node::Identifier(identifier) => self.eval_identifier(identifier.clone()),
-            _ => {
-                Default::default() // Replace with an appropriate default value
-            }
-        };
-        let sub_command = input
-            .get_command()
-            .get_rhs()
-            .into_iter()
-            .map(|node| match node {
-                Node::Identifier(identifier) => identifier.eval(),
-                _ => Default::default(), // Handle other cases appropriately
+        self.eval_redirect_branch(input.get_destination());
+        let _ = self
+            .eval_command(match input.get_command() {
+                Node::CommandStatement(command) => *command,
+                _ => {
+                    unreachable!()
+                }
             })
-            .collect::<Vec<String>>();
-
-        let mut full_command = vec![command.clone()];
-        full_command.extend(sub_command);
-
-        let mut std_in = Stdio::inherit();
-        let mut std_out = Stdio::inherit();
-        let mut std_err = Stdio::inherit();
-
-        self.eval_redirect_branch(
-            input.get_destination(),
-            &mut std_in,
-            &mut std_out,
-            &mut std_err,
-        );
-        match self.rsh_pipe_launch(vec![full_command], std_in, std_out, std_err) {
-            Ok(mut child) => {
-                let _ = child.wait();
-            }
-            Err(err) => {
-                println!("Error:> {:?}", err);
-            }
-        };
+            .map_err(|err| {
+                println!("Error: {:?}", err);
+            });
     }
 
     fn eval_branch(&mut self, node: Node) -> impl Any {
@@ -664,7 +636,7 @@ impl Evaluator {
                 }
                 Node::Comment(_) => {}
                 _ => {
-                    println!("I don't know: {:?}", s);
+                    println!("compound_statement < I don't know: {:?}", s);
                 }
             }
         }
@@ -685,66 +657,21 @@ impl Evaluator {
         }
     }
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn test_restore_tty_signals() {
-        let rsh = Rsh::new();
-        let evaluator = Evaluator::new(rsh);
-        evaluator.restore_tty_signals();
-        // Add assertions or checks if possible
-    }
+impl Drop for Evaluator {
+    fn drop(&mut self) {
+        // 標準出力を元に戻す
+        if let Err(err) = dup2(libc::STDOUT_FILENO, libc::STDOUT_FILENO) {
+            eprintln!("Failed to reset output: {}", err);
+        }
 
-    /*
-    #[test]
-    fn test_rsh_launch_success() {
-        let rsh = Rsh::new();
-        let mut evaluator = Evaluator::new(rsh);
-        let args = vec!["echo".to_string(), "Hello, world!".to_string()];
-        let result = evaluator.rsh_launch(args);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Status::success());
-    }
-    #[test]
-    fn test_rsh_launch_failure() {
-        let rsh = Rsh::new();
-        let mut evaluator = Evaluator::new(rsh);
-        let args = vec!["nonexistent_command".to_string()];
-        let result = evaluator.rsh_launch(args);
-        assert!(result.is_err());
-    }
+        // 標準エラー出力を元に戻す
+        if let Err(err) = dup2(libc::STDERR_FILENO, libc::STDERR_FILENO) {
+            eprintln!("Failed to reset error output: {}", err);
+        }
 
-     */
-
-    #[test]
-    fn test_rsh_execute_cd() {
-        let rsh = Rsh::new();
-        let mut evaluator = Evaluator::new(rsh);
-        let args = vec!["cd".to_string(), "/".to_string()];
-        let result = evaluator.rsh_execute(args);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Status::success());
-    }
-
-    #[test]
-    fn test_eval_identifier() {
-        let rsh = Rsh::new();
-        let evaluator = Evaluator::new(rsh);
-        let identifier = Identifier::new("test".to_string());
-        let result = evaluator.eval_identifier(identifier);
-        assert_eq!(result, "test");
-    }
-
-    #[test]
-    fn test_eval_command() {
-        let rsh = Rsh::new();
-        let mut evaluator = Evaluator::new(rsh);
-        let command = CommandStatement::new(
-            Node::Identifier(Identifier::new("echo".to_string())),
-            vec![Node::Identifier(Identifier::new("Hello".to_string()))],
-        );
-        evaluator.eval_command(command);
-        // Add assertions or checks if possible
+        // 標準入力を元に戻す
+        if let Err(err) = dup2(libc::STDIN_FILENO, libc::STDIN_FILENO) {
+            eprintln!("Failed to reset input: {}", err);
+        }
     }
 }

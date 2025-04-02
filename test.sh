@@ -8,10 +8,9 @@ echo \
         'shell' \
         'script'
 
-sort < test.txt > sorted.txt
-sort < test.txt | grep 'a' > sorted.txt
-ls ./not/exists/directory 2> error.txt
-
+sort < input.txt >> output.txt
+sort < input.txt | grep 'a' >> output.txt
+ls ./not/exists/directory 2>> error.txt
 
 a=12
 b=$a

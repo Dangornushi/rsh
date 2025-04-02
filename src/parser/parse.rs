@@ -19,6 +19,7 @@ pub enum Node {
     RedirectOutput(Box<RedirectOutput>),
     RedirectOutputAppend(Box<RedirectOutputAppend>),
     RedirectErrorOutput(Box<RedirectErrorOutput>),
+    RedirectErrorOutputAppend(Box<RedirectErrorOutputAppend>),
     Redirect(Box<Redirect>),
     ExecScript(Box<ExecScript>),
     Reference(Box<Reference>),
@@ -89,6 +90,7 @@ impl CompoundStatement {
     }
 }
 // 代入を表す
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct Define {
     var: Node,
@@ -196,6 +198,22 @@ pub struct RedirectErrorOutput {
 impl RedirectErrorOutput {
     pub fn new(destination: Node) -> RedirectErrorOutput {
         RedirectErrorOutput {
+            destination: destination,
+        }
+    }
+
+    pub fn get_destination(&self) -> Node {
+        self.destination.clone()
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct RedirectErrorOutputAppend {
+    destination: Node,
+}
+impl RedirectErrorOutputAppend {
+    pub fn new(destination: Node) -> RedirectErrorOutputAppend {
+        RedirectErrorOutputAppend {
             destination: destination,
         }
     }
@@ -357,14 +375,20 @@ impl Parse {
         let (no_used, parsed) = context(
             "parse_identifier",
             alt((
-                permutation((tag("\""), nom::bytes::complete::is_not("\""), tag("\""))),
-                permutation((tag("'"), nom::bytes::complete::is_not("'"), tag("'"))),
+                map(
+                    permutation((tag("\""), nom::bytes::complete::is_not("\""), tag("\""))),
+                    |(_, content, _)| content,
+                ),
+                map(
+                    permutation((tag("'"), nom::bytes::complete::is_not("'"), tag("'"))),
+                    |(_, content, _)| content,
+                ),
             )),
         )(input)?;
         Ok((
             no_used,
             // TODO  シングルクォーと・ダブルクォートの区別が必要
-            Node::Identifier(Identifier::new(format!("{}", parsed.1))),
+            Node::Identifier(Identifier::new(parsed.to_string())),
         ))
     }
 
@@ -500,23 +524,39 @@ impl Parse {
         Ok((no_used, parsed))
     }
 
+    //Self::parse_redirect_operator,
     fn parse_redirect_specifier(input: &str) -> IResult<&str, Node> {
         let (no_used, parsed) = context(
             "parse_redirect_specifier",
             map(
                 permutation((
                     multispace0,
-                    alt((tag("<"), tag(">"), tag(">>"), tag("2>"))),
+                    alt((
+                        tag(">>"),
+                        tag("2>>"),
+                        tag("<"),
+                        tag(">"),
+                        tag("1>"),
+                        tag("2>"),
+                        tag("2>&1"),
+                    )),
                     multispace0,
                     Self::parse_filename,
                 )),
                 |(_, kind, _, filename)| match kind {
                     "<" => Node::RedirectInput(Box::new(RedirectInput::new(filename))),
                     ">" => Node::RedirectOutput(Box::new(RedirectOutput::new(filename))),
+                    "1>" => Node::RedirectOutput(Box::new(RedirectOutput::new(filename))),
                     ">>" => {
                         Node::RedirectOutputAppend(Box::new(RedirectOutputAppend::new(filename)))
                     }
                     "2>" => Node::RedirectErrorOutput(Box::new(RedirectErrorOutput::new(filename))),
+                    "2>>" => Node::RedirectErrorOutputAppend(Box::new(
+                        RedirectErrorOutputAppend::new(filename),
+                    )),
+                    "2>&1" => {
+                        Node::RedirectErrorOutput(Box::new(RedirectErrorOutput::new(filename)))
+                    }
                     _ => unreachable!(),
                 },
             ),
@@ -536,7 +576,6 @@ impl Parse {
         Ok((no_used, parsed))
     }
 
-    //cat test.txt |  sort > sorted.txt
     fn parse_pipeline(input: &str) -> IResult<&str, Node> {
         let (no_used, parsed) = context(
             "parse_pipeline",
@@ -865,7 +904,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_redirect_input() {
+    fn test_parse_redirect_input() {
         let input = " < file";
         let expected = Node::RedirectInput(Box::new(RedirectInput::new(Node::Identifier(
             Identifier::new("file".to_string()),
@@ -893,7 +932,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_redirect_output() {
+    fn test_parse_redirect_output() {
         let input = " > file";
         let expected = Node::RedirectOutput(Box::new(RedirectOutput::new(Node::Identifier(
             Identifier::new("file".to_string()),
@@ -918,10 +957,28 @@ mod tests {
         )));
         let result = Parse::parse_redirect(input).unwrap().1;
         assert_eq!(result, expected);
+
+        let input = "cmd > file1 >> file2";
+        let expected = Node::Redirect(Box::new(Redirect::new(
+            Node::CommandStatement(Box::new(CommandStatement::new(
+                Node::Identifier(Identifier::new("cmd".to_string())),
+                vec![],
+            ))),
+            vec![
+                Node::RedirectOutput(Box::new(RedirectOutput::new(Node::Identifier(
+                    Identifier::new("file1".to_string()),
+                )))),
+                Node::RedirectOutputAppend(Box::new(RedirectOutputAppend::new(Node::Identifier(
+                    Identifier::new("file2".to_string()),
+                )))),
+            ],
+        )));
+        let result = Parse::parse_redirect(input).unwrap().1;
+        assert_eq!(result, expected);
     }
 
     #[test]
-    fn parse_redirect_error_output() {
+    fn test_parse_redirect_error_output() {
         let input = "cmd 2> error.log";
         let expected = Node::Redirect(Box::new(Redirect::new(
             Node::CommandStatement(Box::new(CommandStatement::new(
@@ -930,6 +987,21 @@ mod tests {
             ))),
             vec![Node::RedirectErrorOutput(Box::new(
                 RedirectErrorOutput::new(Node::Identifier(Identifier::new(
+                    "error.log".to_string(),
+                ))),
+            ))],
+        )));
+        let result = Parse::parse_redirect(input).unwrap().1;
+        assert_eq!(result, expected);
+
+        let input = "cmd 2>> error.log";
+        let expected = Node::Redirect(Box::new(Redirect::new(
+            Node::CommandStatement(Box::new(CommandStatement::new(
+                Node::Identifier(Identifier::new("cmd".to_string())),
+                vec![],
+            ))),
+            vec![Node::RedirectErrorOutputAppend(Box::new(
+                RedirectErrorOutputAppend::new(Node::Identifier(Identifier::new(
                     "error.log".to_string(),
                 ))),
             ))],
@@ -958,6 +1030,7 @@ mod tests {
         let result = Parse::parse_redirect(input).unwrap().1;
         assert_eq!(result, expected);
     }
+
     #[test]
     fn test_parse_complex_command() {
         let input = "echo \"Hello, World!\" > sorted.txt | cat sorted.txt";
