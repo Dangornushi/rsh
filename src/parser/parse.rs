@@ -31,35 +31,6 @@ impl Default for Node {
         Node::Identifier(Identifier::new(String::new()))
     }
 }
-impl Node {
-    /// 式を評価する
-    pub fn eval(&self) -> Vec<Node> {
-        match self {
-            Node::CompoundStatement(compound_statement) => compound_statement.eval(),
-            Node::CommandStatement(command) => command.0.eval(),
-            Node::Pipeline(pipeline) => pipeline.get_commands(),
-            _ => Default::default(),
-        }
-    }
-
-    pub fn get_node(&self) -> Node {
-        self.clone()
-    }
-
-    pub fn get_lhs(&self) -> Node {
-        match self {
-            Node::CommandStatement(command) => command.get_command(),
-            _ => Default::default(),
-        }
-    }
-
-    pub fn get_rhs(&self) -> Vec<Node> {
-        match self {
-            Node::CommandStatement(command) => command.get_sub_command(),
-            _ => Default::default(),
-        }
-    }
-}
 
 // コマンド達の連結を表す
 #[derive(Debug, PartialEq, Clone)]
@@ -72,19 +43,6 @@ impl CompoundStatement {
         CompoundStatement { stmt: val }
     }
 
-    /// 生成する
-    pub fn from(val: Node) -> CompoundStatement {
-        CompoundStatement {
-            stmt: Vec::from([val]),
-        }
-    }
-
-    /// 生成する
-    pub fn start_node(val: Node, val2: Vec<Node>) -> CompoundStatement {
-        let mut v = val2.clone();
-        v.insert(0, val.clone());
-        CompoundStatement { stmt: v }
-    }
     pub fn eval(&self) -> Vec<Node> {
         self.stmt.clone()
     }
@@ -134,9 +92,6 @@ pub struct Pipeline(Vec<Node>);
 impl Pipeline {
     pub fn new(val: Vec<Node>) -> Pipeline {
         Pipeline(val)
-    }
-    pub fn from(val: Node) -> Pipeline {
-        Pipeline(Vec::from([val]))
     }
     pub fn get_commands(&self) -> Vec<Node> {
         self.0.clone()
@@ -281,9 +236,6 @@ pub struct Comment {
 impl Comment {
     pub fn new(val: String) -> Comment {
         Comment { comment: val }
-    }
-    pub fn get_comment(&self) -> String {
-        self.comment.clone()
     }
 }
 
@@ -841,7 +793,8 @@ mod tests {
         let input = "var=\"value\"";
         let expected = Node::Define(Box::new(Define::new(
             Node::Identifier(Identifier::new("var".to_string())),
-            Node::Identifier(Identifier::new("\"value\"".to_string())),
+            // TODO: identifier -> string
+            Node::Identifier(Identifier::new("value".to_string())),
         )));
         let result = Parse::parse_define(input).unwrap().1;
         assert_eq!(result, expected);
@@ -1039,6 +992,7 @@ mod tests {
                 Node::Redirect(Box::new(Redirect::new(
                     Node::CommandStatement(Box::new(CommandStatement::new(
                         Node::Identifier(Identifier::new("echo".to_string())),
+                        // TODO: identifier -> string
                         vec![Node::Identifier(Identifier::new(
                             "Hello, World!".to_string(),
                         ))],
@@ -1062,7 +1016,8 @@ mod tests {
         let input = "var=\"value\"";
         let expected = Node::Define(Box::new(Define::new(
             Node::Identifier(Identifier::new("var".to_string())),
-            Node::Identifier(Identifier::new("\"value\"".to_string())),
+            // TODO: identifier -> string
+            Node::Identifier(Identifier::new("value".to_string())),
         )));
         let result = Parse::parse_statement(input).unwrap().1;
         assert_eq!(result, expected);
@@ -1122,7 +1077,8 @@ mod tests {
         let expected = Node::CompoundStatement(CompoundStatement::new(vec![
             Node::Define(Box::new(Define::new(
                 Node::Identifier(Identifier::new("var".to_string())),
-                Node::Identifier(Identifier::new("\"value\"".to_string())),
+                // TODO: identifier -> string
+                Node::Identifier(Identifier::new("value".to_string())),
             ))),
             Node::CommandStatement(Box::new(CommandStatement::new(
                 Node::Identifier(Identifier::new("command".to_string())),

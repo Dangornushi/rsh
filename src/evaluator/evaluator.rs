@@ -587,14 +587,6 @@ impl Evaluator {
             });
     }
 
-    fn eval_branch(&mut self, node: Node) -> impl Any {
-        // 変数などのデータ型を戻り値として返すようにする？
-        // 変数格納のハッシュマップ
-        // 関数格納のハッシュマップ
-        // 今いる関数
-        // exit code
-    }
-
     fn eval_exec_script(&mut self, script: ExecScript) {
         // スクリプトを実行
         let var = match script.get_filename() {

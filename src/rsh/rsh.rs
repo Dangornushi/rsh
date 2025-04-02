@@ -410,11 +410,6 @@ impl Rsh {
             .collect()
     }
 
-    fn initializations_cursor_value(&mut self) {
-        self.cursor_x = self.buffer.buffer.len();
-        self.char_count = self.buffer.buffer.chars().count();
-    }
-
     fn initializations_cursor_view(&mut self, stdout: &mut std::io::Stdout) {
         // カーソルを行の最後尾に移動
         let mut count = 0;
@@ -686,12 +681,14 @@ impl Rsh {
 
     fn get_filterd_commands(&self, buffer: String) -> Vec<String> {
         // コマンド実行履歴の中からbufferで始まるものを取得
-        let history_matches: Vec<String> = self
+        let mut history_matches: Vec<String> = self
             .history_database
             .iter()
             .filter(|history| history.get_command().starts_with(&buffer))
             .map(|history| history.get_command().to_string())
             .collect();
+
+        history_matches.reverse();
 
         // 利用可能なコマンドの中からbufferで始まるものを取得
         let matches = self
@@ -1033,13 +1030,6 @@ impl Rsh {
                     // コマンドの実行
                     let mut buffer = &mut self.buffer.buffer.clone();
 
-                    // CSV
-                    let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                    let path = self
-                        .open_profile(".rsh_history")
-                        .map(|path| csv_writer(buffer.clone(), time, &path));
-                    // ---
-
                     self.execute_commands(&mut buffer);
                     self.buffer.buffer.clear();
                     enable_raw_mode().unwrap();
@@ -1056,6 +1046,12 @@ impl Rsh {
     }
 
     pub fn execute_commands(&mut self, command: &mut String) -> i32 {
+        // CSV
+        let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let _ = self
+            .open_profile(".rsh_history")
+            .map(|path| csv_writer(command.clone(), time, &path));
+        // ---
         // 入力を実行可能な形式に分割
         let parsed = Parse::parse_node(&command).clone();
 

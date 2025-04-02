@@ -10,9 +10,6 @@ pub struct History {
 }
 
 impl History {
-    pub fn new(command: String, time: String) -> Self {
-        Self { command, time }
-    }
     pub fn get_command(&self) -> &String {
         &self.command
     }
